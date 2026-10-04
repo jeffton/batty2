@@ -3,14 +3,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 git pull --ff-only
 git diff --quiet && git diff --cached --quiet || { echo 'Commit changes before deploying.' >&2; exit 1; }
-pnpm install --frozen-lockfile
-pnpm check
-pnpm test
-pnpm build
 revision=$(git rev-parse --short HEAD)
+build=$(mktemp -d /tmp/batty2-build.XXXXXX)
+trap 'rm -rf "$build"' EXIT
+git archive HEAD | tar -x -C "$build"
+(
+  cd "$build"
+  pnpm install --frozen-lockfile
+  pnpm check
+  pnpm test
+  pnpm build
+)
 release="/opt/batty2/releases/${revision}.$(date +%s)"
 mkdir -p "$release"
-cp -a dist package.json pnpm-lock.yaml pnpm-workspace.yaml README.md "$release/"
+cp -a "$build"/{dist,package.json,pnpm-lock.yaml,pnpm-workspace.yaml,README.md} "$release/"
 printf '%s\n' "$revision" > "$release/BUILD_ID"
 (cd "$release" && pnpm install --prod --frozen-lockfile)
 ln -sfn "$release" /opt/batty2/next
