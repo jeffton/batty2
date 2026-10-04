@@ -261,7 +261,9 @@ A message not summarized yet shows as "(not summarized yet: zoom it)".
 No message appears in full, not even the last ones.
 
 Navigating: zoom(id, n) opens line id+n into the two lines of n/2
-messages it was made from; zoom(id, 1) gives message id in full. Zoom
+messages it was made from; zoom(id, 1) gives its uncompressed non-thought
+text projection. Images are represented by placeholders; complete message
+metadata, attachment bytes and reasoning remain in the permanent archive. Zoom
 whenever a summary only mentions something you need, such as what your
 last reply said, a decision, a past attempt or where a file is, before
 you act, guess or ask. date(id) gives the date and time of message id.`;
@@ -611,7 +613,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       defineTool({
         name: "zoom",
         description:
-          "Open memory line id+n into its two child lines; n=1 returns the exact original message.",
+          "Open memory line id+n into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
         parameters: Type.Object({ id: Type.Integer(), n: Type.Integer() }),
         replay: "safe",
         outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
