@@ -196,7 +196,7 @@ export class Runtime {
         registry,
         settings: {
           extensions: baseExtensions,
-          compaction: { enabled: false },
+          compaction: { enabled: true },
           toolExecution: "parallel",
           stream: { timeoutMs: 300_000 },
         },

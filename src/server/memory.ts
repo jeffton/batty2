@@ -11,6 +11,7 @@ import {
   defineExtension,
   defineTool,
   GenerationTask,
+  CompactionTask,
   hook,
   LiveDoc,
   section,
@@ -632,6 +633,9 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }),
     ],
     hooks: [
+      hook(CompactionTask, {
+        beforeCompact: (_, api) => (api.conversationId === main.id ? { decline: true } : undefined),
+      }),
       hook(GenerationTask, {
         beforeRequest: async ({ messages }, api, context) => {
           if (api.conversationId !== main.id) return;
