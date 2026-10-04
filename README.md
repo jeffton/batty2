@@ -15,6 +15,23 @@ State lives in `/var/lib/batty2/.batty`; source lives in `/root/github/batty2`. 
 
 Outgoing prompts appear immediately, including attachment names, and survive page refresh until the server publishes the matching user message. Failed submissions restore the draft; cancelled queued prompts remove their outgoing entry.
 
+## Cron CLI
+
+Deployment installs `/usr/local/bin/batty2`. It authenticates with the local state secret and calls the running service's cron runtime; it never opens another scheduler.
+
+```sh
+batty2 cron add --workspace roy --prompt 'Læs pt.md' --in 3m \
+  --model openai-codex/gpt-6.1-sol --thinking medium \
+  --session daily-detached --daily-context chat-only
+batty2 cron list --workspace roy
+batty2 cron update JOB_ID --enabled false
+batty2 cron remove JOB_ID
+batty2 cron import --json job.json
+batty2 --help
+```
+
+`--root` defaults to `/var/lib/batty2`. `--json FILE` accepts request fields (`-` reads stdin); flags override them. Import takes a full Batty2 job, preserves ID/timestamps/nextAt, and rejects collisions. Import disabled jobs before cutover, reconcile their final nextAt after disabling the source scheduler, then enable them. Existing job IDs are not accepted by ordinary `add`.
+
 ## Notifications
 
 Web push uses the installed PWA's service worker. Sending a message requests browser permission; authenticated startup resynchronizes granted subscriptions without prompting. Main-thread assistant replies notify even with the app closed; tool handoffs, worker replies and `NO_REPLY` do not. Notification clicks open the permanent chat. VAPID keys and subscriptions live in `.batty/web-push`; `webPushSubject` retains the configured VAPID subject.

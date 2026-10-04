@@ -21,6 +21,7 @@ printf '%s\n' "$revision" > "$release/BUILD_ID"
 (cd "$release" && pnpm install --prod --frozen-lockfile)
 ln -sfn "$release" /opt/batty2/next
 mv -Tf /opt/batty2/next /opt/batty2/current
+install -m 755 scripts/batty2 /usr/local/bin/batty2
 systemctl restart batty2.service
 for attempt in {1..60}; do
   if curl --fail --silent http://127.0.0.1:3148/healthz; then exit 0; fi

@@ -978,6 +978,54 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     await arm();
     return job;
   };
+  const importJob = async (input: CronJob) => {
+    if (!input.id || !input.prompt.trim()) throw new Error("Cron id and prompt are required");
+    if (typeof input.enabled !== "boolean") throw new Error("Cron enabled must be boolean");
+    if (!Number.isFinite(input.createdAt) || !Number.isFinite(input.updatedAt))
+      throw new Error("Invalid cron timestamp");
+    for (const value of [input.nextAt, input.retryAt]) {
+      if (value !== undefined && !Number.isFinite(value)) throw new Error("Invalid cron timestamp");
+    }
+    modelChange(input.model, input.thinkingLevel);
+    if (
+      !["new", "daily-inline", "main-inline", "daily-detached", "main-detached"].includes(
+        input.session.kind,
+      )
+    )
+      throw new Error("Invalid cron session mode");
+    const mode = input.session.includePreviousContext;
+    if (mode !== undefined && typeof mode !== "boolean" && mode !== "chat-only")
+      throw new Error("Invalid cron context mode");
+    const ws = await workspace(input.workspaceId);
+    let schedule: Schedule;
+    if (input.schedule.kind === "at") {
+      if (!Number.isFinite(Date.parse(input.schedule.at))) throw new Error("Invalid at schedule");
+      schedule = { kind: "at", at: input.schedule.at };
+    } else {
+      schedule = normalizeSchedule(input.schedule, Date.now());
+    }
+    const job: CronJob = {
+      id: input.id,
+      workspaceId: ws.id,
+      enabled: input.enabled,
+      prompt: input.prompt,
+      session: structuredClone(input.session),
+      schedule,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
+    };
+    if (input.model !== undefined) job.model = input.model;
+    if (input.thinkingLevel !== undefined) job.thinkingLevel = input.thinkingLevel;
+    if (input.nextAt !== undefined) job.nextAt = input.nextAt;
+    if (input.retryAt !== undefined) job.retryAt = input.retryAt;
+    await main.commit(async (tx) => {
+      const doc = await tx.doc(OrchestrationDoc);
+      if (doc.jobs[job.id]) throw new Error(`Cron job already exists: ${job.id}`);
+      doc.jobs[job.id] = job;
+    }, context);
+    await arm();
+    return job;
+  };
   const updateJob = async (id: string, input: Partial<CronJobInput>) => {
     modelChange(input.model, input.thinkingLevel);
     if (
@@ -1256,6 +1304,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       return harness.snapshot(WorkerDoc, id, context);
     },
     listJobs,
+    importJob,
     addJob,
     updateJob,
     removeJob,

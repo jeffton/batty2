@@ -14,6 +14,7 @@ import { PasskeyAuthService, formatSetupCode } from "./passkeys";
 import { verifyAuthToken } from "./auth";
 import { createLoginRateLimiter } from "./login-rate-limit";
 import { registerAuthRoutes } from "./routes/auth";
+import { registerCronRoutes } from "./routes/cron";
 import { registerSiteRoutes } from "./routes/sites";
 import { registerMcpRoutes } from "./routes/mcp";
 import { Runtime, context } from "./runtime";
@@ -81,6 +82,7 @@ const routeContext = {
   routePath: (route: string) => route,
 };
 registerAuthRoutes(routeContext);
+registerCronRoutes(app, runtime.orchestration);
 registerSiteRoutes(routeContext);
 registerMcpRoutes({ ...routeContext, mcp: runtime.tools.mcp });
 app.get("/api/push/public-key", async () => ({ publicKey: webPush.getPublicKey() }));

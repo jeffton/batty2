@@ -1119,6 +1119,89 @@ test("a worker's cron tool defaults to its originating workspace", async () => {
   expect((await orchestration.listJobs())[0]!.workspaceId).toBe("other");
 }, 15000);
 
+test("imported cron preserves identity and interval phase across restart without admitting paused jobs", async () => {
+  const { orchestration, open } = await fixture();
+  let { harness } = await open();
+  const job = {
+    id: "legacy-job",
+    workspaceId: "other",
+    enabled: false,
+    prompt: "legacy prompt",
+    model: "faux/faux-2",
+    thinkingLevel: "high",
+    session: { kind: "daily-detached" as const, includePreviousContext: "chat-only" as const },
+    schedule: { kind: "every" as const, every: "5m", everyMs: 300000 },
+    createdAt: 1000,
+    updatedAt: 2000,
+    nextAt: Date.now() - 1234,
+  };
+  expect(await orchestration.importJob(job)).toEqual(job);
+  await expect(orchestration.importJob({ ...job, prompt: "overwrite" })).rejects.toThrow(
+    "already exists",
+  );
+  await orchestration.tick();
+  expect(await orchestration.listRunningCron()).toEqual([]);
+  orchestration.close();
+  await harness.close(context);
+  ({ harness } = await open());
+  expect(await orchestration.listJobs("other")).toEqual([job]);
+  expect((await orchestration.updateJob(job.id, { enabled: true })).nextAt).toBe(job.nextAt);
+});
+
+test("cutover reconciles a legacy occurrence executed after the disabled import", async () => {
+  const { orchestration, open } = await fixture();
+  await open();
+  const oldOccurrence = Date.now() - 1000;
+  const imported = {
+    id: "cutover-job",
+    workspaceId: "test",
+    enabled: false,
+    prompt: "legacy",
+    session: { kind: "daily-detached" as const },
+    schedule: { kind: "every" as const, every: "5m", everyMs: 300000 },
+    createdAt: 1000,
+    updatedAt: 2000,
+    nextAt: oldOccurrence,
+  };
+  await orchestration.importJob(imported);
+  // Batty1 executes oldOccurrence, then is disabled. Its final checkpoint advances one interval.
+  const finalCheckpoint = oldOccurrence + 300000;
+  await orchestration.removeJob(imported.id);
+  await orchestration.importJob({ ...imported, nextAt: finalCheckpoint });
+  await orchestration.updateJob(imported.id, { enabled: true });
+  await orchestration.tick();
+  expect(await orchestration.listRunLogs()).toEqual([]);
+  expect((await orchestration.listJobs())[0]!.nextAt).toBe(finalCheckpoint);
+});
+
+test("cron import rejects invalid settings before persistence and accepts historical paused at jobs", async () => {
+  const { orchestration, open } = await fixture();
+  await open();
+  const base = {
+    id: "historical",
+    workspaceId: "test",
+    enabled: false,
+    prompt: "done",
+    session: { kind: "new" as const },
+    schedule: { kind: "at" as const, at: "2020-01-01T00:00:00.000Z" },
+    createdAt: 1000,
+    updatedAt: 2000,
+  };
+  await expect(orchestration.importJob({ ...base, nextAt: NaN })).rejects.toThrow("timestamp");
+  await expect(orchestration.importJob({ ...base, workspaceId: "missing" })).rejects.toThrow();
+  await expect(orchestration.importJob({ ...base, thinkingLevel: "invalid" })).rejects.toThrow(
+    "thinking",
+  );
+  await expect(
+    orchestration.importJob({
+      ...base,
+      schedule: { kind: "cron", expression: "invalid", timezone: "UTC" },
+    }),
+  ).rejects.toThrow();
+  expect(await orchestration.listJobs()).toEqual([]);
+  expect(await orchestration.importJob(base)).toEqual(base);
+});
+
 test("stopping a waiting inline cron does not abort main or withdraw ordinary queued input", async () => {
   const { faux, orchestration, open, registry } = await fixture();
   let release!: () => void;

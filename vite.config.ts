@@ -59,7 +59,7 @@ export default defineConfig({
   },
   pack: {
     deps: { resolveDepSubpath: true },
-    entry: ["src/server/main.ts"],
+    entry: ["src/server/main.ts", "src/server/cron-cli.ts"],
     outDir: "dist/server",
     format: ["esm"],
     target: "node24",
