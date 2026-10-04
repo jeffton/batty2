@@ -1,0 +1,35 @@
+import type {
+  AppSettingsStatus,
+  AuthStatus,
+  ProviderAuthStatus,
+  SessionState,
+  ModelOption,
+  WorkspaceInfo,
+} from "@/shared/types";
+import { DEFAULT_APP_COLOR, DEFAULT_APP_TITLE } from "@/shared/appearance";
+export type ConnectionState = "online" | "offline" | "connecting";
+export type AppActionContext = ReturnType<typeof createAppState> & Record<string, any>;
+export function createAppState() {
+  return {
+    authenticated: false,
+    bootstrapped: false,
+    auth: {
+      passkeyCount: 0,
+      passkeyLoginAvailable: false,
+      registrationOpen: false,
+      setupRequired: false,
+    } as AuthStatus,
+    providerAuth: { providers: [] } as ProviderAuthStatus,
+    settings: {
+      braveSearchConfigured: false,
+      appearance: { title: DEFAULT_APP_TITLE, color: DEFAULT_APP_COLOR },
+    } as AppSettingsStatus,
+    models: [] as ModelOption[],
+    workspaces: [] as WorkspaceInfo[],
+    activeSession: undefined as SessionState | undefined,
+    connectionState: "connecting" as ConnectionState,
+    authError: undefined as string | undefined,
+    lastError: undefined as string | undefined,
+    loadingOlderMessages: false,
+  };
+}

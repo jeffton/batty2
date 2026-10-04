@@ -1,0 +1,369 @@
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import ChatHeader from "@/client/components/ChatHeader.vue";
+import MessageComposer from "@/client/components/MessageComposer.vue";
+import SessionTranscriptView from "@/client/components/SessionTranscriptView.vue";
+import { listRunningSubagents } from "@/client/lib/api";
+import { resolveThinkingOptions } from "@/client/lib/thinking-levels";
+import { useAppStore } from "@/client/stores/app";
+import type { QueuedPrompt, UiMessage } from "@/shared/types";
+
+const MODEL_POPOVER_ID = "chat-main-model-popover";
+const MODEL_POPOVER_ANCHOR = "--chat-main-model-anchor";
+
+type ComposerHandle = InstanceType<typeof MessageComposer>;
+
+const store = useAppStore();
+const composer = ref<ComposerHandle | null>(null);
+const promptError = ref<string>();
+const subagentCount = ref(0);
+const subagentError = ref<string>();
+const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSession));
+const pendingIdlePromptSessionIds = new Set<string>();
+let promptRequestId = 0;
+let optimisticMessageId = 0;
+type OptimisticUserMessage = Extract<UiMessage, { role: "user" }>;
+type PendingOptimisticMessage = {
+  message: OptimisticUserMessage;
+  clientMessageId: string;
+};
+const optimisticMessagesBySessionId = ref<Record<string, PendingOptimisticMessage[]>>({});
+const activeOptimisticMessages = computed(() => {
+  const sessionId = store.activeSession?.sessionId;
+  return sessionId
+    ? (optimisticMessagesBySessionId.value[sessionId] ?? []).map((item) => item.message)
+    : [];
+});
+const isUnavailable = computed(() => store.connectionState === "offline");
+
+watch(
+  [() => store.activeSession?.sessionId, isUnavailable],
+  ([sessionId, offline], _previous, onCleanup) => {
+    subagentCount.value = 0;
+    subagentError.value = undefined;
+    if (!sessionId || offline) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    onCleanup(() => {
+      cancelled = true;
+      clearTimeout(timer);
+    });
+
+    async function refresh(): Promise<void> {
+      try {
+        const subagents = await listRunningSubagents(sessionId!);
+        if (cancelled) return;
+        subagentCount.value = subagents.length;
+        subagentError.value = undefined;
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof TypeError) {
+          console.error("Failed to refresh subagent status", error);
+          subagentError.value = undefined;
+        } else {
+          subagentError.value = error instanceof Error ? error.message : String(error);
+        }
+      } finally {
+        if (!cancelled) timer = setTimeout(() => void refresh(), 1_500);
+      }
+    }
+
+    void refresh();
+  },
+  { immediate: true },
+);
+const currentModelOption = computed(() =>
+  store.models.find((model) => model.id === store.activeSession?.model),
+);
+const modelButtonLabel = computed(() =>
+  currentModelOption.value ? shortModelLabel(currentModelOption.value) : "",
+);
+const thinkingButtonLabel = computed(() =>
+  store.activeSession ? thinkingLabel(store.activeSession.thinkingLevel) : "",
+);
+
+function shortModelLabel(model: { label: string }): string {
+  return model.label.split(" · ", 1)[0] ?? model.label;
+}
+
+function thinkingLabel(value: string): string {
+  return value === "xhigh" ? "XHigh" : value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function showPromptError(error: unknown, sessionId: string | undefined, requestId: number): void {
+  if (requestId !== promptRequestId || store.activeSession?.sessionId !== sessionId) {
+    return;
+  }
+
+  promptError.value = error instanceof Error ? error.message : String(error);
+}
+
+function addOptimisticMessage(
+  sessionId: string,
+  clientMessageId: string,
+  text: string,
+  files: File[],
+): string {
+  const submittedText = text.trim();
+  const submittedFileNames = files.map((file) => file.name);
+  const attachmentLabel =
+    submittedFileNames.length > 0 ? `Attached: ${submittedFileNames.join(", ")}` : "";
+  const displayText = [submittedText, attachmentLabel].filter(Boolean).join("\n\n");
+  const message: OptimisticUserMessage = {
+    id: `optimistic-user-${Date.now()}-${++optimisticMessageId}`,
+    role: "user",
+    timestamp: Date.now(),
+    clientMessageId,
+    blocks: [{ type: "text", text: displayText }],
+  };
+
+  optimisticMessagesBySessionId.value = {
+    ...optimisticMessagesBySessionId.value,
+    [sessionId]: [
+      ...(optimisticMessagesBySessionId.value[sessionId] ?? []),
+      { message, clientMessageId },
+    ],
+  };
+  return message.id;
+}
+
+function removeOptimisticMessage(sessionId: string, messageId: string): void {
+  const remainingForSession = (optimisticMessagesBySessionId.value[sessionId] ?? []).filter(
+    (pending) => pending.message.id !== messageId,
+  );
+  const next = { ...optimisticMessagesBySessionId.value };
+  if (remainingForSession.length > 0) {
+    next[sessionId] = remainingForSession;
+  } else {
+    delete next[sessionId];
+  }
+  optimisticMessagesBySessionId.value = next;
+}
+
+function reconcileOptimisticMessage(): void {
+  const session = store.activeSession;
+  if (!session) {
+    return;
+  }
+
+  const pending = optimisticMessagesBySessionId.value[session.sessionId] ?? [];
+  const userMessages = session.messages.filter(
+    (message): message is OptimisticUserMessage => message.role === "user",
+  );
+  const authoritativeClientMessageIds = new Set(
+    [...userMessages, ...(session.queuedPrompts ?? [])].flatMap((message) =>
+      message.clientMessageId ? [message.clientMessageId] : [],
+    ),
+  );
+  const remaining = pending.filter(
+    (candidate) => !authoritativeClientMessageIds.has(candidate.clientMessageId),
+  );
+  if (remaining.length === pending.length) {
+    return;
+  }
+
+  const next = { ...optimisticMessagesBySessionId.value };
+  if (remaining.length > 0) {
+    next[session.sessionId] = remaining;
+  } else {
+    delete next[session.sessionId];
+  }
+  optimisticMessagesBySessionId.value = next;
+}
+
+function wasPromptAccepted(sessionId: string, clientMessageId: string): boolean {
+  const session = store.activeSession;
+  return (
+    session?.sessionId === sessionId &&
+    [...session.messages, ...(session.queuedPrompts ?? [])].some(
+      (message) => "clientMessageId" in message && message.clientMessageId === clientMessageId,
+    )
+  );
+}
+
+async function sendPrompt(text: string, files: File[]): Promise<void> {
+  const sessionId = store.activeSession?.sessionId;
+  const gateSessionId = store.activeSession?.isStreaming
+    ? undefined
+    : store.activeSession?.sessionId;
+  if (gateSessionId && pendingIdlePromptSessionIds.has(gateSessionId)) {
+    return;
+  }
+
+  const requestId = ++promptRequestId;
+  promptError.value = undefined;
+  composer.value?.clear();
+  const clientMessageId = crypto.randomUUID();
+  const optimisticId =
+    gateSessionId && !text.trimStart().startsWith("/")
+      ? addOptimisticMessage(gateSessionId, clientMessageId, text, files)
+      : undefined;
+  if (gateSessionId) {
+    pendingIdlePromptSessionIds.add(gateSessionId);
+  }
+  try {
+    await store.sendPrompt(text, files, clientMessageId);
+    if (gateSessionId && optimisticId) {
+      removeOptimisticMessage(gateSessionId, optimisticId);
+    }
+  } catch (error) {
+    if (sessionId && !wasPromptAccepted(sessionId, clientMessageId)) {
+      if (optimisticId) {
+        removeOptimisticMessage(sessionId, optimisticId);
+      }
+      composer.value?.restore(sessionId, text, files);
+    }
+    showPromptError(error, sessionId, requestId);
+    throw error;
+  } finally {
+    if (gateSessionId) {
+      pendingIdlePromptSessionIds.delete(gateSessionId);
+    }
+  }
+}
+
+watch(
+  [() => store.activeSession?.messages, () => store.activeSession?.queuedPrompts],
+  reconcileOptimisticMessage,
+);
+watch(
+  () => store.activeSession?.sessionId,
+  () => {
+    promptRequestId += 1;
+    promptError.value = undefined;
+  },
+);
+
+async function runAction(action: () => Promise<unknown>): Promise<void> {
+  promptError.value = undefined;
+  try {
+    await action();
+  } catch (error) {
+    promptError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function removeQueuedPrompt(prompt: QueuedPrompt): Promise<void> {
+  await runAction(() => store.removeQueuedPrompt(prompt.kind, prompt.index));
+}
+
+async function steerPrompt(text: string, files: File[]): Promise<void> {
+  const sessionId = store.activeSession?.sessionId;
+  const gateSessionId = store.activeSession?.isStreaming
+    ? undefined
+    : store.activeSession?.sessionId;
+  if (gateSessionId && pendingIdlePromptSessionIds.has(gateSessionId)) {
+    return;
+  }
+
+  const requestId = ++promptRequestId;
+  promptError.value = undefined;
+  composer.value?.clear();
+  const clientMessageId = crypto.randomUUID();
+  if (gateSessionId) {
+    pendingIdlePromptSessionIds.add(gateSessionId);
+  }
+  try {
+    await store.steerPrompt(text, files, clientMessageId);
+  } catch (error) {
+    if (sessionId && !wasPromptAccepted(sessionId, clientMessageId)) {
+      composer.value?.restore(sessionId, text, files);
+    }
+    showPromptError(error, sessionId, requestId);
+    throw error;
+  } finally {
+    if (gateSessionId) {
+      pendingIdlePromptSessionIds.delete(gateSessionId);
+    }
+  }
+}
+</script>
+
+<template>
+  <main class="chat-session-pane">
+    <ChatHeader />
+
+    <div v-if="!store.activeSession" class="chat-loading">
+      <p v-if="store.lastError" role="alert">{{ store.lastError }}</p>
+      <template v-else
+        ><div class="spinner" />
+        <p class="muted">Loading chat…</p></template
+      >
+    </div>
+    <template v-else>
+      <SessionTranscriptView
+        :session="store.activeSession"
+        :optimistic-messages="activeOptimisticMessages"
+        :load-older-messages="() => store.loadOlderMessages()"
+        :loading-older-messages="store.loadingOlderMessages"
+      />
+
+      <MessageComposer
+        ref="composer"
+        :streaming="store.activeSession.isStreaming"
+        :compacting="store.activeSession.isCompacting"
+        :subagent-count="subagentCount"
+        :session-key="store.activeSession.sessionId"
+        :offline="isUnavailable"
+        :error="promptError ?? subagentError ?? store.lastError"
+        :actions-disabled="isUnavailable"
+        :queued-prompts="store.activeSession.queuedPrompts"
+        :model-popover-id="MODEL_POPOVER_ID"
+        :model-popover-anchor="MODEL_POPOVER_ANCHOR"
+        :models="store.models"
+        :current-model-id="store.activeSession.model"
+        :current-thinking-level="store.activeSession.thinkingLevel"
+        :thinking-options="thinkingOptions"
+        :model-button-label="modelButtonLabel"
+        :thinking-button-label="thinkingButtonLabel"
+        @submit="sendPrompt"
+        @steer="steerPrompt"
+        @stop="runAction(() => store.stopActiveSession())"
+        @remove-queued-prompt="removeQueuedPrompt"
+        @refresh-models="runAction(() => store.refreshModels())"
+        @set-model="runAction(() => store.setModel($event))"
+        @set-thinking-level="runAction(() => store.setThinkingLevel($event))"
+      />
+    </template>
+  </main>
+</template>
+
+<style scoped>
+.chat-session-pane {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  background: var(--color-bg-app);
+}
+
+.chat-loading,
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  text-align: center;
+}
+
+.chat-empty__icon {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 0.75rem;
+  opacity: 0.6;
+}
+
+.chat-empty h3 {
+  margin: 0;
+  color: var(--color-text-strong);
+}
+
+.chat-empty p {
+  margin: 0;
+}
+</style>

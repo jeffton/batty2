@@ -1,0 +1,116 @@
+import { defineStore } from "pinia";
+import { withBaseUrl } from "@/client/lib/base-url";
+import { applyAppAppearance } from "@/client/lib/appearance";
+import * as api from "@/client/lib/api";
+import { applyServerEvent } from "@/client/lib/session-events";
+import { mergeSessionState } from "@/client/lib/session-state";
+import { createAppState } from "./app-state";
+import { providerSettingsActions } from "./app-provider-settings";
+import type { ServerEvent } from "@/shared/types";
+let source: EventSource | undefined;
+export const useAppStore = defineStore("app", {
+  state: createAppState,
+  actions: {
+    ...providerSettingsActions,
+    async bootstrap() {
+      try {
+        const payload = await api.getBootstrap();
+        this.authenticated = payload.authenticated;
+        this.auth = payload.auth;
+        this.providerAuth = payload.providerAuth;
+        this.settings = payload.settings;
+        this.models = payload.models;
+        applyAppAppearance(this.settings.appearance);
+        if (this.authenticated) {
+          this.workspaces = await api.listWorkspaces();
+          this.activeSession = mergeSessionState(await api.getMain(), this.activeSession);
+          this.openStream();
+        }
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        this.connectionState = "offline";
+      } finally {
+        this.bootstrapped = true;
+      }
+    },
+    openStream() {
+      this.closeStream();
+      this.connectionState = "connecting";
+      source = new EventSource(withBaseUrl("/api/main/events"));
+      source.onopen = () => {
+        this.connectionState = "online";
+      };
+      source.onerror = () => {
+        this.connectionState = navigator.onLine ? "connecting" : "offline";
+      };
+      source.onmessage = (message) => {
+        const event = JSON.parse(message.data) as ServerEvent;
+        if (event.type === "error") this.lastError = event.message;
+        this.activeSession = applyServerEvent(this.activeSession, event);
+      };
+    },
+    closeStream() {
+      source?.close();
+      source = undefined;
+    },
+    async logout() {
+      await api.logout();
+      this.closeStream();
+      this.authenticated = false;
+      this.activeSession = undefined;
+    },
+    setAuthError(error: unknown) {
+      this.authError = error instanceof Error ? error.message : String(error);
+    },
+    async sendPrompt(text: string, files: File[], clientMessageId: string) {
+      return api.submitMainPrompt("prompt", text, files, clientMessageId);
+    },
+    async steerPrompt(text: string, files: File[], clientMessageId: string) {
+      return api.submitMainPrompt("steer", text, files, clientMessageId);
+    },
+    async stopActiveSession() {
+      await api.stopMain();
+    },
+    async setModel(model: string) {
+      this.activeSession = mergeSessionState(
+        await api.patchMain("model", { model }),
+        this.activeSession,
+      );
+    },
+    async setThinkingLevel(thinkingLevel: string) {
+      this.activeSession = mergeSessionState(
+        await api.patchMain("thinking", { thinkingLevel }),
+        this.activeSession,
+      );
+    },
+    async removeQueuedPrompt(kind: "steer" | "followUp", index: number) {
+      this.activeSession = mergeSessionState(
+        await api.removeMainQueuedPrompt(kind, index),
+        this.activeSession,
+      );
+    },
+    async loadOlderMessages() {
+      const current = this.activeSession;
+      if (!current?.hasMoreMessages || this.loadingOlderMessages) return;
+      this.loadingOlderMessages = true;
+      try {
+        const page = await api.getMainMessages({ before: current.messages[0]?.id, limit: 50 });
+        const latest = this.activeSession!;
+        const ids = new Set(latest.messages.map((message) => message.id));
+        this.activeSession = {
+          ...latest,
+          messages: [
+            ...page.messages.filter((message) => !ids.has(message.id)),
+            ...latest.messages,
+          ],
+          hasMoreMessages: page.hasMoreMessages,
+          totalMessageCount: page.totalMessageCount,
+        };
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      } finally {
+        this.loadingOlderMessages = false;
+      }
+    },
+  },
+});

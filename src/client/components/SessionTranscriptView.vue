@@ -1,0 +1,725 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import ChatTranscript from "@/client/components/ChatTranscript.vue";
+import { withoutRenderedToolCalls } from "@/client/lib/active-assistant";
+import { buildTranscriptDisplayEntries } from "@/client/lib/transcript-display";
+import { splitHistoryAndTail } from "@/client/lib/transcript-tail";
+import {
+  buildToolStateLookup,
+  buildTranscriptMessages,
+  isAttachmentOutputToolCall,
+  mergeAttachmentCarrierIntoAssistant,
+  toolStatesForMessage,
+} from "@/client/lib/transcript";
+import type { SessionState, UiContentBlock, UiMessage } from "@/shared/types";
+import type { TranscriptDisplayEntry } from "@/client/lib/transcript-display";
+import type { TranscriptMessageView } from "@/client/lib/transcript";
+
+const TRANSCRIPT_BOTTOM_THRESHOLD = 12;
+const TRANSCRIPT_LOAD_OLDER_THRESHOLD = 80;
+const TRANSCRIPT_TAIL_COUNT = 25;
+const USER_SCROLL_INTENT_WINDOW_MS = 1000;
+const TIMESTAMP_GROUP_WINDOW_MS = 10 * 60 * 1000;
+
+type ChatTranscriptHandle = InstanceType<typeof ChatTranscript> & {
+  rootElement: () => HTMLElement | null;
+  topElement: () => HTMLElement | null;
+  tailElement: () => HTMLElement | null;
+  bottomElement: () => HTMLElement | null;
+};
+
+const props = withDefaults(
+  defineProps<{
+    session?: SessionState;
+    optimisticMessages?: UiMessage[];
+    loadOlderMessages: () => Promise<void>;
+    loadingOlderMessages?: boolean;
+    alwaysShowDetails?: boolean;
+    allowSessionPopovers?: boolean;
+  }>(),
+  {
+    session: undefined,
+    optimisticMessages: () => [],
+    loadingOlderMessages: false,
+    alwaysShowDetails: false,
+    allowSessionPopovers: true,
+  },
+);
+
+const transcriptPane = ref<ChatTranscriptHandle | null>(null);
+const isTranscriptPinnedToBottom = ref(true);
+const openDetailsSectionKey = ref<string | null>(null);
+const collapsedDetailsSectionKey = ref<string | null>(null);
+let transcriptScrollElement: HTMLElement | null = null;
+let transcriptTopObserver: IntersectionObserver | null = null;
+let transcriptTailObserver: ResizeObserver | null = null;
+let transcriptViewportObserver: ResizeObserver | null = null;
+let olderMessagesLoadPromise: Promise<void> | null = null;
+let olderMessagesLoadSessionId: string | null = null;
+let olderMessagesRetrySessionId: string | null = null;
+let transcriptNearTop = false;
+let followTranscriptToken = 0;
+let lastUserScrollIntentAt = 0;
+
+const toolStateLookup = computed(() =>
+  buildToolStateLookup(props.session?.messages ?? [], props.session?.activeTools ?? []),
+);
+const transcriptMessages = computed(() =>
+  buildTranscriptMessages(
+    [...(props.session?.messages ?? []), ...props.optimisticMessages],
+    toolStateLookup.value,
+    props.session?.isStreaming ?? false,
+  ),
+);
+const activeAssistantMessage = computed(() =>
+  withoutRenderedToolCalls(
+    props.session?.activeAssistant?.role === "assistant"
+      ? props.session.activeAssistant
+      : undefined,
+    toolStateLookup.value.referencedToolCallIds,
+  ),
+);
+const rawTranscriptEntries = computed<TranscriptMessageView[]>(() => {
+  const entries = [...transcriptMessages.value];
+
+  if (activeAssistantMessage.value) {
+    const lastEntry = entries.at(-1);
+    const lastMessage = lastEntry?.message;
+    const attachmentBlocks =
+      lastMessage?.role === "assistant" &&
+      lastMessage.blocks.length > 0 &&
+      lastMessage.blocks.every((block) =>
+        isAttachmentOutputToolCall(block, toolStateLookup.value.toolStatesByCallId),
+      )
+        ? lastMessage.blocks
+        : [];
+
+    if (attachmentBlocks.length > 0) {
+      entries.pop();
+    }
+
+    const message =
+      attachmentBlocks.length > 0
+        ? mergeAttachmentCarrierIntoAssistant(activeAssistantMessage.value, attachmentBlocks)
+        : activeAssistantMessage.value;
+
+    entries.push({
+      message,
+      toolStatesByCallId: toolStatesForMessage(message, toolStateLookup.value.toolStatesByCallId),
+    });
+  }
+
+  return entries;
+});
+
+function canShowTimestamp(entry: TranscriptMessageView): boolean {
+  const message = entry.message;
+  if (message.role === "user") {
+    return true;
+  }
+
+  return (
+    message.role === "assistant" &&
+    message.turnPhase === "final" &&
+    message.blocks.some((block) => block.type === "text" || block.type === "image")
+  );
+}
+
+function addTimestampVisibility(entries: TranscriptDisplayEntry[]): TranscriptDisplayEntry[] {
+  let previousTimestamp: number | undefined;
+
+  return entries.map((entry) => {
+    if (entry.kind !== "message" || !canShowTimestamp(entry.entry)) {
+      return entry;
+    }
+
+    const timestamp = entry.entry.message.timestamp;
+    const showTimestamp =
+      previousTimestamp === undefined || timestamp - previousTimestamp >= TIMESTAMP_GROUP_WINDOW_MS;
+    previousTimestamp = timestamp;
+    return { ...entry, showTimestamp };
+  });
+}
+
+const transcriptDisplay = computed(() =>
+  buildTranscriptDisplayEntries(
+    rawTranscriptEntries.value,
+    toolStateLookup.value.toolStatesByCallId,
+    {
+      alwaysShowDetails: props.alwaysShowDetails,
+      openDetailsSectionKey: openDetailsSectionKey.value,
+      collapsedDetailsSectionKey: collapsedDetailsSectionKey.value,
+      showLatestDetailsToggle: !props.session?.isStreaming,
+    },
+  ),
+);
+const latestExpandedSectionKey = computed(() => transcriptDisplay.value.latestExpandedSectionKey);
+const transcriptEntries = computed<TranscriptDisplayEntry[]>(() =>
+  addTimestampVisibility(transcriptDisplay.value.entries),
+);
+const transcriptSplit = computed(() =>
+  splitHistoryAndTail(transcriptEntries.value, TRANSCRIPT_TAIL_COUNT),
+);
+const historyEntries = computed(() => transcriptSplit.value.historyEntries);
+const tailEntries = computed(() => transcriptSplit.value.tailEntries);
+const keptHistoryIndexes = computed(() => {
+  const lastIndex = historyEntries.value.length - 1;
+  return lastIndex >= 0 ? [lastIndex] : [];
+});
+const transcriptTailSignature = computed(() => {
+  if (tailEntries.value.length === 0) {
+    return "0";
+  }
+
+  return tailEntries.value
+    .map((entry) =>
+      entry.kind === "message"
+        ? `${entry.entry.message.id}:${entry.entry.message.timestamp}`
+        : `details-toggle:${entry.sectionKey}:${entry.expanded}`,
+    )
+    .join("|");
+});
+const activeAssistantSignature = computed(() => {
+  const assistant = activeAssistantMessage.value;
+  if (!assistant) {
+    return "";
+  }
+
+  return `${assistant.id}:${assistant.timestamp}:${assistant.blocks.reduce(
+    (total, block) => total + blockContentSize(block),
+    0,
+  )}`;
+});
+const activeToolsSignature = computed(() =>
+  (props.session?.activeTools ?? [])
+    .map(
+      (tool) =>
+        `${tool.toolCallId}:${tool.status}:${tool.blocks.length}:${tool.blocks.reduce(
+          (total, block) => total + blockContentSize(block),
+          0,
+        )}`,
+    )
+    .join("|"),
+);
+
+function blockContentSize(block: UiContentBlock): number {
+  switch (block.type) {
+    case "text":
+      return block.text.length;
+    case "thinking":
+      return block.thinking.length;
+    case "image":
+      return block.data?.length ?? block.url?.length ?? 0;
+    case "attachment":
+      return block.file.name.length + block.file.downloadUrl.length;
+    case "toolCall":
+      return block.id.length + block.name.length;
+  }
+}
+
+function transcriptRootElement(): HTMLElement | null {
+  return transcriptPane.value?.rootElement() ?? null;
+}
+
+function transcriptTopElement(): HTMLElement | null {
+  return transcriptPane.value?.topElement() ?? null;
+}
+
+function transcriptTailElement(): HTMLElement | null {
+  return transcriptPane.value?.tailElement() ?? null;
+}
+
+function transcriptBottomElement(): HTMLElement | null {
+  return transcriptPane.value?.bottomElement() ?? null;
+}
+
+function transcriptDistanceFromBottom(): number | null {
+  const element = transcriptRootElement();
+  if (!element) {
+    return null;
+  }
+
+  return element.scrollHeight - element.scrollTop - element.clientHeight;
+}
+
+function updateTranscriptPinnedState(): void {
+  const distanceFromBottom = transcriptDistanceFromBottom();
+  if (distanceFromBottom == null) {
+    isTranscriptPinnedToBottom.value = true;
+    return;
+  }
+
+  if (distanceFromBottom <= TRANSCRIPT_BOTTOM_THRESHOLD) {
+    isTranscriptPinnedToBottom.value = true;
+    return;
+  }
+
+  if (hasRecentUserScrollIntent()) {
+    isTranscriptPinnedToBottom.value = false;
+  }
+}
+
+function stopFollowingTranscript(): void {
+  followTranscriptToken += 1;
+}
+
+function markUserScrollIntent(): void {
+  lastUserScrollIntentAt = performance.now();
+}
+
+function handleTranscriptWheel(event: WheelEvent): void {
+  markUserScrollIntent();
+  if (event.deltaY < 0) {
+    isTranscriptPinnedToBottom.value = false;
+    stopFollowingTranscript();
+  }
+}
+
+function handleTranscriptPointerDown(): void {
+  markUserScrollIntent();
+}
+
+function handleTranscriptKeyDown(event: KeyboardEvent): void {
+  if (!["ArrowUp", "PageUp", "Home"].includes(event.key)) {
+    return;
+  }
+  markUserScrollIntent();
+  isTranscriptPinnedToBottom.value = false;
+  stopFollowingTranscript();
+}
+
+function handleTranscriptTouchStart(): void {
+  markUserScrollIntent();
+  stopFollowingTranscript();
+}
+
+function handleTranscriptTouchMove(): void {
+  markUserScrollIntent();
+  isTranscriptPinnedToBottom.value = false;
+  stopFollowingTranscript();
+}
+
+function hasRecentUserScrollIntent(): boolean {
+  return (
+    lastUserScrollIntentAt > 0 &&
+    performance.now() - lastUserScrollIntentAt <= USER_SCROLL_INTENT_WINDOW_MS
+  );
+}
+
+function bindTranscriptScrollListener(): void {
+  const nextElement = transcriptRootElement();
+  if (transcriptScrollElement === nextElement) {
+    return;
+  }
+
+  transcriptScrollElement?.removeEventListener("scroll", handleTranscriptScroll);
+  transcriptScrollElement?.removeEventListener("wheel", handleTranscriptWheel);
+  transcriptScrollElement?.removeEventListener("pointerdown", handleTranscriptPointerDown);
+  transcriptScrollElement?.removeEventListener("keydown", handleTranscriptKeyDown);
+  transcriptScrollElement?.removeEventListener("touchstart", handleTranscriptTouchStart);
+  transcriptScrollElement?.removeEventListener("touchmove", handleTranscriptTouchMove);
+
+  transcriptScrollElement = nextElement;
+  transcriptScrollElement?.addEventListener("scroll", handleTranscriptScroll, { passive: true });
+  transcriptScrollElement?.addEventListener("wheel", handleTranscriptWheel, { passive: true });
+  transcriptScrollElement?.addEventListener("pointerdown", handleTranscriptPointerDown, {
+    passive: true,
+  });
+  transcriptScrollElement?.addEventListener("keydown", handleTranscriptKeyDown);
+  transcriptScrollElement?.addEventListener("touchstart", handleTranscriptTouchStart, {
+    passive: true,
+  });
+  transcriptScrollElement?.addEventListener("touchmove", handleTranscriptTouchMove, {
+    passive: true,
+  });
+}
+
+function bindTranscriptObservers(): void {
+  transcriptTopObserver?.disconnect();
+  transcriptTopObserver = null;
+  transcriptNearTop = false;
+
+  const transcriptElement = transcriptRootElement();
+  const topElement = transcriptTopElement();
+  if (transcriptElement && topElement && typeof IntersectionObserver !== "undefined") {
+    transcriptTopObserver = new IntersectionObserver(
+      (entries) => {
+        transcriptNearTop = entries.some((entry) => entry.isIntersecting);
+        if (transcriptNearTop) {
+          void maybeLoadOlderMessages();
+        }
+      },
+      {
+        root: transcriptElement,
+        rootMargin: `${TRANSCRIPT_LOAD_OLDER_THRESHOLD}px 0px 0px`,
+      },
+    );
+    transcriptTopObserver.observe(topElement);
+  }
+
+  transcriptViewportObserver?.disconnect();
+  transcriptViewportObserver = null;
+
+  if (transcriptElement && typeof ResizeObserver !== "undefined") {
+    transcriptViewportObserver = new ResizeObserver(() => {
+      if (isTranscriptPinnedToBottom.value) {
+        if (props.session?.isStreaming) {
+          void followTranscriptWhilePinned("auto");
+        } else {
+          void scrollToBottom("auto");
+        }
+        return;
+      }
+
+      updateTranscriptPinnedState();
+      void maybeLoadOlderMessages();
+    });
+    transcriptViewportObserver.observe(transcriptElement);
+  }
+
+  transcriptTailObserver?.disconnect();
+  transcriptTailObserver = null;
+
+  const tailElement = transcriptTailElement();
+  if (tailElement && typeof ResizeObserver !== "undefined") {
+    transcriptTailObserver = new ResizeObserver(() => {
+      if (!isTranscriptPinnedToBottom.value) {
+        return;
+      }
+
+      if (props.session?.isStreaming) {
+        void followTranscriptWhilePinned("auto");
+      } else {
+        void scrollToBottom("auto");
+      }
+    });
+    transcriptTailObserver.observe(tailElement);
+  }
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function waitForTranscriptLayout(): Promise<void> {
+  await nextTick();
+  await nextAnimationFrame();
+}
+
+async function scrollToBottom(behavior: ScrollBehavior = "auto"): Promise<void> {
+  if (transcriptEntries.value.length === 0) {
+    return;
+  }
+
+  await waitForTranscriptLayout();
+
+  const element = transcriptRootElement();
+  if (!element) {
+    return;
+  }
+
+  for (let attempts = 0; attempts < 3; attempts += 1) {
+    const scrollBehavior = attempts === 0 ? behavior : "auto";
+    const bottomOffset = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTo({ top: bottomOffset, behavior: scrollBehavior });
+
+    await nextAnimationFrame();
+
+    const bottomElement = transcriptBottomElement();
+    if (bottomElement) {
+      const transcriptRect = element.getBoundingClientRect();
+      const sentinelRect = bottomElement.getBoundingClientRect();
+      const sentinelDistanceFromBottom = transcriptRect.bottom - sentinelRect.bottom;
+      if (sentinelDistanceFromBottom < 0) {
+        element.scrollBy({ top: -sentinelDistanceFromBottom, behavior: "auto" });
+        await nextAnimationFrame();
+      }
+    }
+
+    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distanceFromBottom <= 1) {
+      break;
+    }
+  }
+
+  isTranscriptPinnedToBottom.value = true;
+}
+
+async function followTranscriptWhilePinned(behavior: ScrollBehavior = "auto"): Promise<void> {
+  if (!isTranscriptPinnedToBottom.value) {
+    return;
+  }
+
+  const token = ++followTranscriptToken;
+  await scrollToBottom(behavior);
+
+  while (token === followTranscriptToken) {
+    await nextAnimationFrame();
+
+    if (!props.session?.isStreaming || !isTranscriptPinnedToBottom.value) {
+      return;
+    }
+
+    const element = transcriptRootElement();
+    if (!element) {
+      return;
+    }
+
+    const bottomOffset = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = bottomOffset;
+
+    const bottomElement = transcriptBottomElement();
+    if (bottomElement) {
+      const transcriptRect = element.getBoundingClientRect();
+      const sentinelRect = bottomElement.getBoundingClientRect();
+      const sentinelDistanceFromBottom = transcriptRect.bottom - sentinelRect.bottom;
+      if (sentinelDistanceFromBottom < 0) {
+        element.scrollTop += -sentinelDistanceFromBottom;
+      }
+    }
+  }
+}
+
+function canLoadOlderMessages(element: HTMLElement): boolean {
+  const session = props.session;
+  return Boolean(
+    session &&
+    !props.loadingOlderMessages &&
+    session.messagesDetailLevel !== "summary" &&
+    session.hasMoreMessages &&
+    (transcriptNearTop || element.scrollTop <= TRANSCRIPT_LOAD_OLDER_THRESHOLD),
+  );
+}
+
+async function restorePrependAnchor(
+  element: HTMLElement,
+  sessionId: string,
+  previousScrollTop: number,
+  previousScrollHeight: number,
+): Promise<void> {
+  let previousMeasuredHeight = -1;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await waitForTranscriptLayout();
+    const currentElement = transcriptRootElement();
+    if (currentElement !== element || props.session?.sessionId !== sessionId) {
+      return;
+    }
+
+    const currentHeight = element.scrollHeight;
+    const addedHeight = Math.max(0, currentHeight - previousScrollHeight);
+    element.scrollTop = previousScrollTop + addedHeight;
+    if (currentHeight === previousMeasuredHeight) {
+      return;
+    }
+    previousMeasuredHeight = currentHeight;
+  }
+}
+
+async function loadOlderMessagesWhileNeeded(sessionId: string): Promise<void> {
+  while (props.session?.sessionId === sessionId) {
+    const element = transcriptRootElement();
+    if (!element || !canLoadOlderMessages(element)) {
+      return;
+    }
+
+    const requestedSessionId = props.session.sessionId;
+    const previousOldestMessageId = props.session?.messages[0]?.id;
+    const previousScrollTop = element.scrollTop;
+    const previousScrollHeight = element.scrollHeight;
+    await props.loadOlderMessages();
+    if (props.session?.sessionId !== requestedSessionId) {
+      return;
+    }
+    await restorePrependAnchor(
+      element,
+      requestedSessionId,
+      previousScrollTop,
+      previousScrollHeight,
+    );
+    updateTranscriptPinnedState();
+
+    const nextElement = transcriptRootElement();
+    const session = props.session;
+    if (
+      !nextElement ||
+      !session ||
+      session.sessionId !== requestedSessionId ||
+      session.messages[0]?.id === previousOldestMessageId ||
+      !session.hasMoreMessages
+    ) {
+      return;
+    }
+
+    const scrollRange = Math.max(0, nextElement.scrollHeight - nextElement.clientHeight);
+    if (scrollRange > TRANSCRIPT_LOAD_OLDER_THRESHOLD || !canLoadOlderMessages(nextElement)) {
+      return;
+    }
+  }
+}
+
+async function maybeLoadOlderMessages(): Promise<void> {
+  const sessionId = props.session?.sessionId;
+  if (!sessionId) {
+    return;
+  }
+
+  if (olderMessagesLoadPromise) {
+    if (olderMessagesLoadSessionId !== sessionId) {
+      olderMessagesRetrySessionId = sessionId;
+    }
+    return olderMessagesLoadPromise;
+  }
+
+  olderMessagesLoadSessionId = sessionId;
+  olderMessagesLoadPromise = loadOlderMessagesWhileNeeded(sessionId);
+  try {
+    await olderMessagesLoadPromise;
+  } finally {
+    olderMessagesLoadPromise = null;
+    olderMessagesLoadSessionId = null;
+    const retrySessionId = olderMessagesRetrySessionId;
+    olderMessagesRetrySessionId = null;
+    if (retrySessionId && props.session?.sessionId === retrySessionId) {
+      void maybeLoadOlderMessages();
+    }
+  }
+}
+
+function handleTranscriptScroll(): void {
+  updateTranscriptPinnedState();
+  if (!isTranscriptPinnedToBottom.value && hasRecentUserScrollIntent()) {
+    stopFollowingTranscript();
+  }
+  void maybeLoadOlderMessages();
+}
+
+async function jumpToLatest(): Promise<void> {
+  isTranscriptPinnedToBottom.value = true;
+  await scrollToBottom("smooth");
+}
+
+async function initializeOpenedTranscript(sessionId: string): Promise<void> {
+  isTranscriptPinnedToBottom.value = true;
+  await scrollToBottom("auto");
+  await maybeLoadOlderMessages();
+
+  if (props.session?.id === sessionId && props.session.isStreaming) {
+    void followTranscriptWhilePinned("auto");
+  }
+}
+
+function toggleDetails(sectionKey: string): void {
+  if (sectionKey === latestExpandedSectionKey.value) {
+    openDetailsSectionKey.value = null;
+    collapsedDetailsSectionKey.value =
+      collapsedDetailsSectionKey.value === sectionKey ? null : sectionKey;
+    return;
+  }
+
+  collapsedDetailsSectionKey.value = null;
+  openDetailsSectionKey.value = openDetailsSectionKey.value === sectionKey ? null : sectionKey;
+}
+
+onMounted(() => {
+  bindTranscriptScrollListener();
+  bindTranscriptObservers();
+  updateTranscriptPinnedState();
+  if (props.session?.id) {
+    void initializeOpenedTranscript(props.session.id);
+  }
+});
+
+onUnmounted(() => {
+  stopFollowingTranscript();
+  transcriptScrollElement?.removeEventListener("scroll", handleTranscriptScroll);
+  transcriptScrollElement?.removeEventListener("wheel", handleTranscriptWheel);
+  transcriptScrollElement?.removeEventListener("pointerdown", handleTranscriptPointerDown);
+  transcriptScrollElement?.removeEventListener("keydown", handleTranscriptKeyDown);
+  transcriptScrollElement?.removeEventListener("touchstart", handleTranscriptTouchStart);
+  transcriptScrollElement?.removeEventListener("touchmove", handleTranscriptTouchMove);
+  transcriptScrollElement = null;
+  transcriptTopObserver?.disconnect();
+  transcriptViewportObserver?.disconnect();
+  transcriptTailObserver?.disconnect();
+});
+
+watch(transcriptPane, () => {
+  bindTranscriptScrollListener();
+  bindTranscriptObservers();
+  updateTranscriptPinnedState();
+});
+
+watch(
+  [() => props.session?.id, latestExpandedSectionKey],
+  ([sessionId, sectionKey], [previousSessionId, previousSectionKey]) => {
+    if (sessionId !== previousSessionId || sectionKey !== previousSectionKey) {
+      openDetailsSectionKey.value = null;
+      collapsedDetailsSectionKey.value = null;
+    }
+  },
+);
+
+watch(
+  [
+    () => props.session?.id,
+    () => props.session?.messagesDetailLevel,
+    () => props.session?.hasMoreMessages,
+    () => props.session?.messages[0]?.id,
+    () => props.loadingOlderMessages,
+    () => transcriptEntries.value.length,
+    () => openDetailsSectionKey.value,
+    () => collapsedDetailsSectionKey.value,
+  ],
+  async () => {
+    await waitForTranscriptLayout();
+    await maybeLoadOlderMessages();
+  },
+  { flush: "post" },
+);
+
+watch(
+  [
+    () => props.session?.id,
+    () => openDetailsSectionKey.value,
+    () => collapsedDetailsSectionKey.value,
+    transcriptTailSignature,
+    activeAssistantSignature,
+    activeToolsSignature,
+  ],
+  ([sessionId], [previousSessionId]) => {
+    const openedSession = sessionId !== previousSessionId;
+    if (openedSession) {
+      if (sessionId) {
+        void initializeOpenedTranscript(sessionId);
+      }
+      return;
+    }
+
+    if (!isTranscriptPinnedToBottom.value) {
+      stopFollowingTranscript();
+      return;
+    }
+
+    if (props.session?.isStreaming) {
+      void followTranscriptWhilePinned("auto");
+    } else {
+      void scrollToBottom("smooth");
+    }
+  },
+  { flush: "post" },
+);
+</script>
+
+<template>
+  <ChatTranscript
+    ref="transcriptPane"
+    :history-entries="historyEntries"
+    :tail-entries="tailEntries"
+    :kept-history-indexes="keptHistoryIndexes"
+    :is-streaming="Boolean(props.session?.isStreaming)"
+    :is-pinned-to-bottom="isTranscriptPinnedToBottom"
+    @jump-to-latest="jumpToLatest"
+    :allow-session-popovers="props.allowSessionPopovers"
+    @toggle-details="toggleDetails"
+  />
+</template>

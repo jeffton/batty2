@@ -1,0 +1,222 @@
+<script setup lang="ts">
+import type { ModelOption } from "@/shared/types";
+import BasePopover from "@/client/components/BasePopover.vue";
+import ThinkingLevelPicker from "@/client/components/ThinkingLevelPicker.vue";
+import { Search } from "@lucide/vue";
+import { computed, ref, watch } from "vue";
+
+const props = defineProps<{
+  popoverId: string;
+  anchorName: string;
+  models: ModelOption[];
+  currentModelId?: string;
+  currentThinkingLevel: string;
+  thinkingOptions: string[];
+  disabled?: boolean;
+  placement?: "down" | "up";
+}>();
+
+const emit = defineEmits<{
+  setModel: [modelId: string];
+  setThinkingLevel: [thinkingLevel: string];
+}>();
+
+const modelFilter = ref("");
+
+const filteredModels = computed(() => {
+  const query = modelFilter.value.toLowerCase().trim();
+  const models = query
+    ? props.models.filter(
+        (m) =>
+          m.label.toLowerCase().includes(query) ||
+          m.provider.toLowerCase().includes(query) ||
+          m.id.toLowerCase().includes(query),
+      )
+    : props.models;
+
+  return [...models].sort((a, b) => {
+    const providerCmp = a.provider.localeCompare(b.provider);
+    if (providerCmp !== 0) return providerCmp;
+    return shortModelLabel(a).localeCompare(shortModelLabel(b));
+  });
+});
+
+function shortModelLabel(model: Pick<ModelOption, "label">): string {
+  return model.label.split(" · ", 1)[0] ?? model.label;
+}
+
+watch(
+  () => document.getElementById(props.popoverId)?.matches(":popover-open"),
+  (open) => {
+    if (open) modelFilter.value = "";
+  },
+);
+</script>
+
+<template>
+  <BasePopover
+    :id="props.popoverId"
+    :class="['mc-popover', props.placement === 'up' ? 'mc-popover--up' : '']"
+    :style="{ 'position-anchor': props.anchorName }"
+  >
+    <ThinkingLevelPicker
+      v-if="props.thinkingOptions.length > 0"
+      :options="props.thinkingOptions"
+      :current="props.currentThinkingLevel"
+      :disabled="props.disabled"
+      @change="emit('setThinkingLevel', $event)"
+    />
+
+    <div class="mc-popover__search-row">
+      <Search :size="14" class="mc-popover__search-icon" />
+      <input
+        v-model="modelFilter"
+        class="mc-popover__search"
+        type="text"
+        placeholder="Filter models…"
+        :disabled="props.disabled"
+      />
+    </div>
+
+    <div class="mc-popover__models">
+      <button
+        v-for="model in filteredModels"
+        :key="model.id"
+        type="button"
+        :class="['mc-popover__model', model.id === props.currentModelId ? 'is-active' : '']"
+        :disabled="props.disabled"
+        @click="emit('setModel', model.id)"
+      >
+        <span class="mc-popover__model-name">{{ shortModelLabel(model) }}</span>
+        <span class="mc-popover__model-provider">{{ model.provider }}</span>
+      </button>
+      <div v-if="filteredModels.length === 0" class="mc-popover__empty">No models match.</div>
+    </div>
+  </BasePopover>
+</template>
+
+<style scoped>
+.mc-popover {
+  display: none;
+}
+
+.mc-popover:popover-open {
+  position: fixed;
+  position-area: block-end span-inline-start;
+  position-try-fallbacks:
+    block-end span-inline-end,
+    block-start span-inline-start,
+    block-start span-inline-end;
+  width: min(22rem, calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 1rem));
+  max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 1rem);
+  height: auto;
+  max-height: min(32rem, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 4rem));
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 0.75rem;
+  background: var(--color-bg-overlay);
+  color: inherit;
+  box-shadow: var(--color-shadow-popover);
+  gap: 0.35rem;
+}
+
+.mc-popover--up:popover-open {
+  position-area: normal;
+  position-try-fallbacks: none;
+  top: auto;
+  right: calc(var(--safe-area-right) + 0.8rem);
+  bottom: calc(var(--safe-area-bottom) + 4.5rem);
+  left: auto;
+  margin: 0;
+}
+
+.mc-popover::backdrop {
+  background: var(--color-backdrop);
+}
+
+.mc-popover__search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--color-bg-elevated);
+  border-radius: 0.5rem;
+}
+
+.mc-popover__search-icon {
+  color: var(--color-text-subtle);
+  flex-shrink: 0;
+}
+
+.mc-popover__search {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 0.88rem;
+  outline: none;
+  padding: 0;
+}
+
+.mc-popover__models {
+  flex: 0 1 auto;
+  min-height: min(14rem, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 12rem));
+  max-height: min(22rem, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 12rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mc-popover__model {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.88rem;
+  transition: background 80ms ease;
+}
+
+@media (hover: hover) {
+  .mc-popover__model:hover:not(.is-active) {
+    background: var(--color-bg-hover);
+  }
+}
+
+.mc-popover__model.is-active {
+  background: var(--color-user-bg);
+  color: var(--color-user-text);
+  font-weight: 600;
+}
+
+.mc-popover__model-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mc-popover__model-provider {
+  font-size: 0.78rem;
+  color: var(--color-text-subtle);
+  text-transform: capitalize;
+  flex-shrink: 0;
+}
+
+.mc-popover__empty {
+  padding: 0.6rem 0.5rem;
+  color: var(--color-text-subtle);
+  font-size: 0.85rem;
+}
+</style>

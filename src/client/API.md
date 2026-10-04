@@ -1,0 +1,32 @@
+# Client API
+
+The authenticated root route contains one main chat. Workspace listings never select or replace this session.
+
+## Main chat
+
+- `GET /api/bootstrap`: existing `BootstrapPayload` auth/provider/settings/models fields. The client does not consume workspace snapshots or daily-session data.
+- `GET /api/workspaces`: `{ workspaces: WorkspaceInfo[] }`.
+- `GET /api/main`: `SessionState`, full latest message window.
+- `GET /api/main/messages?before=<durable entry id>&limit=50`: `SessionMessagesPage`.
+- `GET /api/main/events`: SSE JSON `ServerEvent`. Full reset snapshots merge overlapping messages while preserving paginated history. Durable entry IDs need not be numeric.
+- `POST /api/main/prompt` and `POST /api/main/steer`: multipart `text`, `clientMessageId`, repeated `files`; return `{ disposition: 'started' | 'queued', submissionId, sessionId }`. Optimistic messages are removed after HTTP acceptance; durable user messages need not carry `clientMessageId`.
+- `POST /api/main/stop`: `{ ok: true }`.
+- `PATCH /api/main/model`: `{ model: string }`; return `SessionState`.
+- `PATCH /api/main/thinking`: `{ thinkingLevel: string }`; return `SessionState`.
+- `POST /api/main/queue/remove`: `{ kind, index }`, kind `steer` or `followUp`, index copied from the queued prompt's durable submission identifier; return `SessionState`.
+
+## Read-only worker sessions
+
+- `GET /api/sessions/:id`: `SessionState`.
+- `GET /api/sessions/:id/messages?before=&limit=`: `SessionMessagesPage`.
+- `GET /api/sessions/:id/events`: SSE `ServerEvent`.
+- `GET /api/sessions/:id/resources`: `SessionResourcesResponse` (used for the main session too).
+- `GET /api/sessions/:mainId/subagents`: `RunningSubagent[]`.
+- `GET /api/workspaces/:id/cron-jobs`: `CronJob[]`.
+- `GET /api/workspaces/:id/cron-run-logs`: `CronRunLog[]`.
+
+Tool details `subagent.sessionId`, nested codemode `calls[].subagent.sessionId`, and custom-message `data.subagent.sessionId` / `data.cron.sessionId` identify transcripts. Cron log entries expose `sessionId` when a transcript exists. Worker popovers have no composer, stop control, or mutation endpoint.
+
+## Existing settings/auth APIs
+
+Existing shapes are consumed for models, provider usage, passkey auth, logout, provider auth, appearance/default model, Brave Search, environment variables, AGENTS.md, MCP settings/auth/workspace status, and site visibility. Exact routes and request bodies are in `lib/api.ts`. The MCP panel defaults to global settings; it does not choose the main session's workspace.
