@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   defineExtension,
+  hook,
+  GenerationTask,
   defineTool,
   section,
   type ToolRegistration,
@@ -175,7 +177,6 @@ export async function createTools(
     });
   };
   const local: ToolRegistration[] = [
-    mcpExposure.search,
     ...native,
     bridge("web-search", () => createWebSearchTool(config), "safe"),
     scoped("browser", createBrowserTool),
@@ -207,12 +208,28 @@ export async function createTools(
     name: "batty-tools",
     tools: local,
     tasks: [nestedTask],
+    hooks: [
+      hook(GenerationTask, {
+        beforeRequest: (request) => ({
+          messages: request.messages.map((message) =>
+            message.role === "system"
+              ? {
+                  ...message,
+                  toolsAdded: message.toolsAdded?.filter(
+                    (tool) => tool.name !== "tool_search" && !tool.name.startsWith("mcp__"),
+                  ),
+                }
+              : message,
+          ),
+        }),
+      }),
+    ],
     sections: [
       section("tool-guidelines", () =>
         [
           "Use read for files and images; explicit limit removes the read byte cap.",
           "Use edit for exact unique replacements, merging overlapping changes.",
-          "Use codemode to batch tools or find MCP tools with searchTools/describeTool. Nested tools return strings, except bash returns {output, exit_code, truncated, wall_time_seconds, full_output_path?} and MCP calls return CallToolResult objects.",
+          "MCP tools are available only through codemode. Use codemode to batch tools or find MCP tools with searchTools/describeTool. Nested tools return strings, except bash returns {output, exit_code, truncated, wall_time_seconds, full_output_path?} and MCP calls return CallToolResult objects.",
           ...guidelines,
         ].join("\n"),
       ),

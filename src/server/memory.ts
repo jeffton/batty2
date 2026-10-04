@@ -24,6 +24,8 @@ import {
   ProviderDoc,
 } from "@earendil-works/pi-durable";
 
+import { decodeRuntimeNotice } from "./runtime-notices";
+
 export const NODE_BYTES = 512;
 export const VIEW_BYTES = 128_000;
 export type MemoryLeaf = {
@@ -98,7 +100,12 @@ export function projectEntry(entry: EntryRecord): MemoryLeaf[] {
           : message.content
               .map((part) => (part.type === "text" ? part.text : `[image ${part.mimeType}]`))
               .join("\n");
-      append(entry.kind === "batty.import-note" ? "note" : "user", text, message.timestamp);
+      const notice = decodeRuntimeNotice(message.content);
+      append(
+        notice || entry.kind === "batty.import-note" ? "note" : "user",
+        notice ? `Runtime ${notice.kind}: ${notice.text}` : text,
+        message.timestamp,
+      );
     } else if (message.role === "assistant") {
       if (
         imported &&
@@ -174,9 +181,9 @@ export function renderView(
 }
 export const COMPACT_PROMPT = `You write the memory of Batty, an AI agent that works for one user in one
 endless chat, through tools and subagents. Each message has a kind: user
-(the user's words; but one starting "[id] " is a subagent's report),
+(the user's words),
 talk (Batty's replies), tool (Batty's tool calls), echo (tool results), note
-(memories from before this chat).
+(runtime notices and memories from before this chat).
 
 Over the messages grows a binary tree of one-line summaries. First, each
 message is compressed alone into a line (a short message is its own
@@ -597,7 +604,8 @@ export function createMemory(config: MemoryConfig, models: Models) {
       (message) =>
         message.role === "user" &&
         message.timestamp === original.timestamp &&
-        JSON.stringify(message.content) === JSON.stringify(original.content),
+        JSON.stringify(message.content) ===
+          JSON.stringify(decodeRuntimeNotice(original.content)?.text ?? original.content),
     );
     if (start < 0) throw new Error("Main run boundary absent from request");
     const system = getCurrentSystemMessage(messages.slice(0, start));

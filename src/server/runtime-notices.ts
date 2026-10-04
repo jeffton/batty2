@@ -1,13 +1,65 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { CronJobSession, PreviousContextMode } from "@/shared/types";
+import type { PreviousContextMode } from "@/shared/types";
 
 export const BATTY_RUNTIME_NOTICE_CUSTOM_TYPE = "batty-runtime-notice";
-
+const NOTICE_OPEN = "<batty-runtime-notice>";
+const NOTICE_CLOSE = "</batty-runtime-notice>";
 export type RuntimeNoticeKind = "cron" | "subagent";
-
 export interface RuntimeNotice {
   kind: RuntimeNoticeKind;
   text: string;
+  data?: Record<string, unknown>;
+}
+
+// Durable inputs use provider-compatible user messages. The envelope preserves
+// their application type through queued admission, storage and context copies.
+export function encodeRuntimeNotice(notice: RuntimeNotice): string {
+  return `${NOTICE_OPEN}${JSON.stringify(notice)}${NOTICE_CLOSE}`;
+}
+export function decodeRuntimeNotice(content: unknown): RuntimeNotice | undefined {
+  if (Array.isArray(content)) {
+    if (content.length !== 1 || content[0]?.type !== "text") return undefined;
+    content = content[0].text;
+  }
+  if (typeof content !== "string" || !content.startsWith(NOTICE_OPEN)) return undefined;
+  if (!content.endsWith(NOTICE_CLOSE)) return undefined;
+  try {
+    const notice = JSON.parse(content.slice(NOTICE_OPEN.length, -NOTICE_CLOSE.length));
+    if (!notice || !["cron", "subagent"].includes(notice.kind) || typeof notice.text !== "string")
+      return undefined;
+    return notice;
+  } catch {
+    return undefined;
+  }
+}
+
+function contextInstructions(mode: PreviousContextMode = false): string {
+  return mode === "chat-only"
+    ? "You received a chat-only snapshot of the main context; tool calls, tool results and thinking were omitted."
+    : mode === true
+      ? "You received a fixed snapshot of the main's prepared context. It does not update as main continues."
+      : "You start fresh with workspace system instructions and the assigned prompt.";
+}
+
+export function buildSubagentRuntimeNotice(
+  _depth: number,
+  prompt: string,
+  includePreviousContext: PreviousContextMode = false,
+): RuntimeNotice {
+  return {
+    kind: "subagent",
+    text: [
+      "You are a subagent carrying out an assigned task, not the main assistant. Work only on this task in this execution scope.",
+      contextInstructions(includePreviousContext),
+      "Detailed work and tool calls stay here. Asynchronous final responses and errors go to the canonical main thread; synchronous results return through the calling agent's tool call. Make your final response self-contained.",
+      "Assigned task:",
+      prompt.trim(),
+    ].join("\n\n"),
+  };
+}
+
+export function buildSubagentSteeringRuntimeNotice(prompt: string): RuntimeNotice {
+  return { kind: "subagent", text: `Steering message from the calling agent:\n\n${prompt.trim()}` };
 }
 
 export function buildCronRuntimeNotice({
@@ -19,83 +71,27 @@ export function buildCronRuntimeNotice({
 }: {
   scheduleLabel: string;
   prompt: string;
-  session: CronJobSession;
+  session: { kind: string; includePreviousContext?: PreviousContextMode };
   phase?: "run" | "delivery" | "skipped";
   now?: Date;
 }): RuntimeNotice {
-  const lines = [
-    `Cron ${phase === "run" ? "run triggered" : phase === "delivery" ? "result delivered" : "run skipped"}. Current time: ${formatLocalDateTime(now)}. Schedule: ${scheduleLabel}`,
-    "",
-    ...(phase === "run"
-      ? cronSessionInstructions(session)
-      : [
-          phase === "delivery"
-            ? "Detached cron result. Detailed work stays in the linked session; the final response or error is delivered here."
-            : "The following error explains why this scheduled run was skipped.",
-        ]),
-    "",
-    phase === "run" ? "Prompt:" : "Scheduled prompt (for reference):",
-    prompt.trim(),
-  ];
-
+  const inline = session.kind === "daily-inline" || session.kind === "main-inline";
   return {
     kind: "cron",
-    text: lines.join("\n"),
-  };
-}
-
-function cronSessionInstructions(session: CronJobSession): string[] {
-  switch (session.kind) {
-    case "new":
-      return [
-        "Session mode: new. Each run starts fresh with workspace system instructions and the scheduled prompt. Your work and final response stay in this session.",
-      ];
-    case "daily-inline":
-      return [
-        "Session mode: daily-inline. You run in the workspace's daily conversation. Your messages, tool calls, and final response remain in its continuing context.",
-      ];
-    case "daily-detached":
-      return [
-        "Session mode: daily-detached. Each run gets a separate session alongside the daily conversation.",
-        session.includePreviousContext === true
-          ? "You have a fixed snapshot of the daily context, copied after pending work settles and possibly compacted."
-          : session.includePreviousContext === "chat-only"
-            ? "You have a chat-only transcript of the daily context. Tool calls, tool results, thinking, and other transcript details were omitted."
-            : "You start fresh with workspace system instructions and the scheduled prompt.",
-        "Detailed work and tool calls stay here; your final response or an error returns to the associated daily session. Make the final response self-contained. Use NO_REPLY for a silent successful run.",
-        "This isolation protects daily context. Delegate for useful division of work; manage context usage locally.",
-      ];
-  }
-}
-
-export function buildSubagentRuntimeNotice(
-  depth: number,
-  prompt: string,
-  includePreviousContext: PreviousContextMode = false,
-): RuntimeNotice {
-  return {
-    kind: "subagent",
     text: [
-      "You are a subagent carrying out a task assigned by a parent agent. Your final response will be returned to that agent.",
-      ...(includePreviousContext === "chat-only"
+      `Cron ${phase === "run" ? "run triggered" : phase === "delivery" ? "result delivered" : "run skipped"}. Current time: ${now.toISOString()}. Schedule: ${scheduleLabel}.`,
+      ...(phase === "run"
         ? [
-            "You received a chat-only transcript of the parent session. Tool calls, tool results, thinking, and other transcript details were omitted.",
+            `You are executing a scheduled task. Session mode: ${session.kind}.`,
+            inline
+              ? "You run inline in the permanent main conversation, without a daily reset. This turn uses the scheduled workspace's execution scope; messages, tools and final response stay in main's continuing context."
+              : `You run in a separate execution scope, not the main assistant. ${contextInstructions(session.includePreviousContext)} Detailed work and tool calls stay here; your final response or error is delivered to the canonical main thread. Make the final response self-contained.`,
           ]
-        : []),
-      depth < 2
-        ? "Subagents you create cannot delegate further."
-        : "Do not call the subagent tool from this session.",
-      "",
-      "Assigned task:",
-      prompt.trim(),
-    ].join("\n"),
-  };
-}
-
-export function buildSubagentSteeringRuntimeNotice(prompt: string): RuntimeNotice {
-  return {
-    kind: "subagent",
-    text: ["Steering message from the parent agent:", "", prompt.trim()].join("\n"),
+        : [
+            "Detailed work stays in the linked execution scope; this is a runtime report, not a user request.",
+          ]),
+      `${phase === "run" ? "Assigned scheduled task" : "Scheduled prompt (for reference)"}:\n${prompt.trim()}`,
+    ].join("\n\n"),
   };
 }
 
@@ -104,16 +100,7 @@ export function buildRuntimeNoticeMessage(notice: RuntimeNotice, timestamp: numb
     role: "custom",
     customType: `${BATTY_RUNTIME_NOTICE_CUSTOM_TYPE}:${notice.kind}`,
     content: notice.text,
+    details: notice.data,
     timestamp,
   } as AgentMessage;
-}
-
-function formatLocalDateTime(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }

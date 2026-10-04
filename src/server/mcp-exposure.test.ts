@@ -98,7 +98,7 @@ test("MCP sync retries a delayed inline catalogue when the canonical agent is re
     const final = await main.agent(ctx);
     expect(final.cwd).toBe("/canonical");
     expect(final.thinkingLevel).toBe("off");
-    expect(final.tools.map((tool) => tool.name)).toEqual(["base", "mcp__canonical__read"]);
+    expect(final.tools.map((tool) => tool.name)).toEqual(["base"]);
     expect(catalogues).toEqual(["/canonical", "/inline", "/canonical"]);
   } finally {
     release();
@@ -127,6 +127,11 @@ test("MCP sync prunes deleted persisted MCP tool names before resolving a reopen
       agent: { cwd: root, model: { provider: "faux", modelId: "faux-1" } },
     });
     await exposure.syncConversation(main, ctx);
+    const legacy = registry
+      .snapshot()
+      .installed()
+      .find((extension) => extension.name.startsWith("batty-mcp-workspace-"))!;
+    await main.configure({ extensions: [base, legacy], tools: [base.tools![0]!, oldTool] }, ctx);
     expect((await main.agent(ctx)).tools.map((tool) => tool.name)).toContain(oldTool.name);
     await harness.close(ctx);
     registry = createRegistry();

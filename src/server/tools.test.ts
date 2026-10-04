@@ -18,7 +18,7 @@ import {
   fauxToolCall,
   fauxText,
 } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { AgentDoc, createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createOrchestration, OrchestrationDoc } from "./orchestration";
@@ -153,8 +153,8 @@ describe("durable tool bridge", () => {
     expect(result.content?.[0]).toEqual({ type: "text", text: "hello" });
   });
 
-  it("offers direct MCP tools, materializes deferred declarations, and hides codemode-only/hidden declarations", async () => {
-    const { directory, tools, main, faux, run, reopen } = await fixture(true);
+  it("keeps all non-hidden MCP tools inside codemode across reopen and workspace preparation", async () => {
+    const { directory, tools, main, faux, run, reopen, registry } = await fixture(true);
     const server = path.join(directory, "modes.cjs");
     await fs.writeFile(
       server,
@@ -169,7 +169,8 @@ describe("durable tool bridge", () => {
     await tools.syncConversation(main, BACKGROUND_CONTEXT);
     const names = () =>
       main.agent(BACKGROUND_CONTEXT).then((agent) => agent.tools.map((tool) => tool.name));
-    expect(await names()).toContain("mcp__modes__direct");
+    expect(await names()).not.toContain("tool_search");
+    expect((await names()).filter((name) => name.startsWith("mcp__"))).toEqual([]);
     expect(await names()).not.toContain("mcp__modes__deferred");
     expect(await names()).not.toContain("mcp__modes__script");
     expect(await names()).not.toContain("mcp__modes__hidden");
@@ -184,22 +185,19 @@ describe("durable tool bridge", () => {
     };
     faux.setResponses([
       (request) => {
-        expect(declared(request)).toContain("mcp__modes__direct");
+        expect(declared(request)).not.toContain("tool_search");
+        expect(declared(request)).not.toContain("mcp__modes__direct");
         expect(declared(request)).not.toContain("mcp__modes__deferred");
         expect(declared(request)).not.toContain("mcp__modes__script");
         expect(declared(request)).not.toContain("mcp__modes__hidden");
-        return fauxAssistantMessage([fauxToolCall("mcp__modes__direct", {})], {
-          stopReason: "toolUse",
-        });
-      },
-      fauxAssistantMessage([fauxToolCall("tool_search", { query: "deferred" })], {
-        stopReason: "toolUse",
-      }),
-      (request) => {
-        expect(declared(request)).toContain("mcp__modes__deferred");
-        return fauxAssistantMessage([fauxToolCall("mcp__modes__deferred", {})], {
-          stopReason: "toolUse",
-        });
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("codemode", {
+              code: "return await Promise.all([tools.mcp__modes__direct({}), tools.mcp__modes__deferred({}), tools.mcp__modes__script({})])",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
       },
       fauxAssistantMessage([fauxText("done")]),
     ]);
@@ -210,26 +208,77 @@ describe("durable tool bridge", () => {
         ).wait(BACKGROUND_CONTEXT)
       ).status,
     ).toBe("done");
-    expect(await names()).toContain("mcp__modes__deferred");
+    expect((await names()).filter((name) => name.startsWith("mcp__"))).toEqual([]);
     const view = await main.viewState(BACKGROUND_CONTEXT);
     const called = view.value.entries
       .flatMap((entry) => entry.model ?? [])
-      .filter(
-        (message) => message.role === "toolResult" && message.toolName.startsWith("mcp__modes__"),
-      );
-    expect(called).toHaveLength(2);
-    expect(called.every((message: any) => message.isError === false)).toBe(true);
+      .find((message) => message.role === "toolResult" && message.toolName === "codemode") as any;
+    expect(called.isError).toBe(false);
+    expect(called.content[0].text).toContain("direct");
+    expect(called.content[0].text).toContain("deferred");
+    expect(called.content[0].text).toContain("script");
     view.dispose();
     const discovered = await run(
-      'return ALL_TOOLS.filter(tool=>tool.name.startsWith("mcp__modes__")).map(tool=>tool.name).sort()',
+      'return { names: (await searchTools("mcp__modes__")).map(tool=>tool.name).sort(), declaration: await describeTool("mcp__modes__deferred"), hidden: ALL_TOOLS.some(tool=>tool.name === "mcp__modes__hidden") }',
     );
     expect(discovered.content[0].text).toContain("mcp__modes__script");
-    expect(discovered.content[0].text).not.toContain("mcp__modes__hidden");
+    expect(discovered.content[0].text).toContain("mcp__modes__direct");
+    expect(discovered.content[0].text).toContain("mcp__modes__deferred");
+    expect(JSON.parse(discovered.content[0].text).hidden).toBe(false);
+    // Simulate declarations persisted by the old direct/deferred discovery path.
+    const baseNames = await names();
+    await main.commit(async (tx) => {
+      const state = await tx.doc(AgentDoc, main.id);
+      state.extensions = ["batty-tools"];
+      state.tools = [...baseNames, "tool_search", "mcp__modes__direct", "mcp__modes__deferred"];
+    }, BACKGROUND_CONTEXT);
     const restored = await reopen();
     await tools.syncConversation(restored.main, BACKGROUND_CONTEXT);
+    const restoredNames = (await restored.main.agent(BACKGROUND_CONTEXT)).tools.map(
+      (tool) => tool.name,
+    );
+    expect(restoredNames).not.toContain("tool_search");
+    expect(restoredNames.filter((name) => name.startsWith("mcp__"))).toEqual([]);
+    // Legacy implementations remain callable by already-admitted durable tasks,
+    // while their declarations are stripped from the reopened model request.
+    const legacy = registry
+      .snapshot()
+      .installed()
+      .find((extension) => extension.name.startsWith("batty-mcp-workspace-"))!;
+    await restored.main.configure(
+      {
+        extensions: [tools.extension, legacy],
+        tools: [...tools.extension.tools!, ...legacy.tools!],
+      },
+      BACKGROUND_CONTEXT,
+    );
+    await tools.syncConversation(restored.main, BACKGROUND_CONTEXT);
+    faux.setResponses([
+      (request) => {
+        expect(declared(request)).not.toContain("tool_search");
+        expect(declared(request).filter((name) => name.startsWith("mcp__"))).toEqual([]);
+        return fauxAssistantMessage([fauxToolCall("mcp__modes__direct", {})], {
+          stopReason: "toolUse",
+        });
+      },
+      fauxAssistantMessage([fauxText("replayed")]),
+    ]);
     expect(
-      (await restored.main.agent(BACKGROUND_CONTEXT)).tools.map((tool) => tool.name),
-    ).toContain("mcp__modes__deferred");
+      (
+        await (
+          await restored.main.submit({ type: "input", content: "legacy task" }, BACKGROUND_CONTEXT)
+        ).wait(BACKGROUND_CONTEXT)
+      ).status,
+    ).toBe("done");
+    const replayed = await restored.main.viewState(BACKGROUND_CONTEXT);
+    expect(
+      replayed.value.entries
+        .flatMap((entry) => entry.model ?? [])
+        .findLast(
+          (message) => message.role === "toolResult" && message.toolName === "mcp__modes__direct",
+        ),
+    ).toMatchObject({ isError: false });
+    replayed.dispose();
     const otherCwd = path.join(directory, "other");
     await fs.mkdir(otherCwd);
     const prepared = await tools.prepareAgent(
@@ -237,7 +286,9 @@ describe("durable tool bridge", () => {
       await restored.main.agent(BACKGROUND_CONTEXT),
       BACKGROUND_CONTEXT,
     );
-    expect(prepared.tools).toContainEqual(expect.objectContaining({ name: "mcp__modes__direct" }));
+    expect(prepared.tools).not.toContainEqual(
+      expect.objectContaining({ name: "mcp__modes__direct" }),
+    );
     expect(prepared.tools).not.toContainEqual(
       expect.objectContaining({ name: "mcp__modes__deferred" }),
     );
@@ -333,7 +384,11 @@ describe("durable tool bridge", () => {
             [fauxToolCall("subagent", { action: "run", async: true, prompt: "worker shell" })],
             { stopReason: "toolUse" },
           );
-        if (last?.role === "user" && last.content === "worker shell")
+        if (
+          last?.role === "user" &&
+          typeof last.content === "string" &&
+          last.content.endsWith("Assigned task:\n\nworker shell")
+        )
           return fauxAssistantMessage(
             [
               fauxToolCall("bash", {

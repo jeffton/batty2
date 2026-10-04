@@ -30,6 +30,14 @@ import { Cron } from "croner";
 import type { WorkspaceInfo } from "../shared/types.js";
 import type { AppConfig } from "./config.js";
 import { listWorkspaces } from "./workspaces.js";
+import {
+  buildCronRuntimeNotice,
+  buildSubagentRuntimeNotice,
+  buildSubagentSteeringRuntimeNotice,
+  decodeRuntimeNotice,
+  encodeRuntimeNotice,
+  type RuntimeNotice,
+} from "./runtime-notices.js";
 
 const context = BACKGROUND_CONTEXT;
 export type ContextMode = boolean | "chat-only";
@@ -233,6 +241,7 @@ type DeliveryInput = {
   childId: ConversationId;
   mainId: ConversationId;
   prompt: string;
+  notice?: RuntimeNotice;
   report: boolean;
   previous?: TaskId<string>;
   runId?: string;
@@ -240,6 +249,21 @@ type DeliveryInput = {
   change?: RunChange;
   workspaceId?: string;
 };
+// Deliveries admitted before runtime notices retain their original assignment.
+function deliveryNotice(input: DeliveryInput): RuntimeNotice {
+  if (input.notice) return input.notice;
+  if (!input.runId) return buildSubagentRuntimeNotice(0, input.prompt);
+  const marker = /^<batty-cron-context>(.*?)<\/batty-cron-context>\n/s.exec(input.prompt);
+  return {
+    ...buildCronRuntimeNotice({
+      scheduleLabel: "persisted scheduled run",
+      prompt: marker ? input.prompt.slice(marker[0].length) : input.prompt,
+      session: { kind: input.inline ? "main-inline" : "main-detached" },
+    }),
+    ...(marker ? { data: { cron: JSON.parse(marker[1]!) } } : {}),
+  };
+}
+
 type DeliveryState =
   | { phase: "order" }
   | { phase: "deliver"; retryAt?: number }
@@ -378,7 +402,13 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             // Atomic idle-only admission keeps scoped settings out of unrelated main turns.
             const entry = await tx.appendEntry(task.input.childId, {
               kind: "pi.user",
-              model: [{ role: "user", content: task.input.prompt, timestamp: runtime.now() }],
+              model: [
+                {
+                  role: "user",
+                  content: encodeRuntimeNotice(deliveryNotice(task.input)),
+                  timestamp: runtime.now(),
+                },
+              ],
             });
             const submission = await tx.createSubmission({
               conversationId: task.input.childId,
@@ -437,7 +467,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             await child.submit(
               {
                 type: "input",
-                content: task.input.prompt,
+                content: encodeRuntimeNotice(deliveryNotice(task.input)),
                 requestId: `batty-deliver:${task.id}`,
                 whenBusy: "followUp",
               },
@@ -478,7 +508,21 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           await target.submit(
             {
               type: "input",
-              content: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
+              content: encodeRuntimeNotice({
+                kind: task.input.runId ? "cron" : "subagent",
+                text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
+                data: {
+                  runtimeNotice: {
+                    text: `${task.input.runId ? "Cron" : "Subagent"} ${task.input.workerId} result`,
+                    markdown: text,
+                  },
+                  [task.input.runId ? "cron" : "subagent"]: {
+                    sessionId: task.input.workerId,
+                    prompt: task.input.prompt,
+                    ...(task.input.runId ? { runId: task.input.runId } : {}),
+                  },
+                },
+              }),
               whenBusy: task.input.runId ? "followUp" : "steer",
               requestId: `batty-report:${task.id}`,
             },
@@ -671,7 +715,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         await (await api.conversation(worker!.id, ctx))!.submit(
           {
             type: "input",
-            content: args.prompt,
+            content: encodeRuntimeNotice(buildSubagentSteeringRuntimeNotice(args.prompt)),
             whenBusy: "steer",
             requestId: `batty-steer:${api.taskId}`,
           },
@@ -726,6 +770,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           childId: child,
           mainId: doc.mainId!,
           prompt: args.prompt!,
+          notice: buildSubagentRuntimeNotice(0, args.prompt!, args.includePreviousContext ?? false),
           report: isAsync,
           change: { ...change, cwd: ws.path } as RunChange,
           workspaceId: ws.id,
@@ -837,9 +882,16 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
               workerId: String(child),
               childId: child,
               mainId: main.id,
-              prompt: inline
-                ? `<batty-cron-context>${JSON.stringify({ workspaceId: ws.id, cwd: ws.path, runId })}</batty-cron-context>\n${job.prompt}`
-                : job.prompt,
+              prompt: job.prompt,
+              notice: {
+                ...buildCronRuntimeNotice({
+                  scheduleLabel: JSON.stringify(job.schedule),
+                  prompt: job.prompt,
+                  session: job.session,
+                  now: new Date(now),
+                }),
+                data: { cron: { workspaceId: ws.id, cwd: ws.path, runId } },
+              },
               report: !inline,
               runId,
               inline,
@@ -1053,6 +1105,14 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     tasks: [Anchor, Delivery],
     hooks: [
       hook(GenerationTask, {
+        beforeRequest: (request) => ({
+          messages: request.messages.map((message) => {
+            const notice = message.role === "user" && decodeRuntimeNotice(message.content);
+            return notice ? { ...message, content: notice.text } : message;
+          }),
+        }),
+      }),
+      hook(GenerationTask, {
         // Inline turns use the originating workspace for tools. Save main's cwd
         // in the same commit so reopening can restore it after interruption.
         beforeRequest: async (_request, api, ctx) => {
@@ -1079,9 +1139,15 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
                         .flatMap((part) => (part.type === "text" ? [part.text] : []))
                         .join("")
                   : "";
-              const marker = /^<batty-cron-context>(.*?)<\/batty-cron-context>/s.exec(text);
-              if (marker) {
-                origin = JSON.parse(marker[1]!) as { cwd: string; runId: string };
+              const notice = decodeRuntimeNotice(text);
+              if (notice?.kind === "cron" && notice.data?.cron) {
+                origin = notice.data.cron as { cwd: string; runId: string };
+                break;
+              }
+              // Already-admitted inline runs retain their immutable old input.
+              const legacy = /^<batty-cron-context>(.*?)<\/batty-cron-context>/s.exec(text);
+              if (legacy) {
+                origin = JSON.parse(legacy[1]!) as { cwd: string; runId: string };
                 break;
               }
             }

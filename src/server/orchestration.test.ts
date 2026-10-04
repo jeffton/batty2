@@ -22,6 +22,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type, getCurrentTools } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createOrchestration, OrchestrationDoc } from "./orchestration.js";
+import { decodeRuntimeNotice } from "./runtime-notices.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -592,9 +593,15 @@ test.each(["complete", "restart"])(
     await main.waitForIdle(context);
     const state = (await harness.snapshot(OrchestrationDoc, context))!;
     const outer = Object.values(state.workers).find((w) => w.parentId === main.id)!;
-    const history = JSON.stringify((await main.context(context)).messages);
+    const history = (await main.context(context)).messages
+      .map((message) =>
+        message.role === "user"
+          ? (decodeRuntimeNotice(message.content)?.text ?? message.content)
+          : JSON.stringify(message),
+      )
+      .join("\n");
     expect(history).toContain(
-      `[subagent ${outer.id} result]\\nimplementation final report after review`,
+      `[subagent ${outer.id} result]\nimplementation final report after review`,
     );
     expect(history).toContain("review findings");
     expect(history).not.toContain("(no output)");
@@ -1216,6 +1223,34 @@ test("inline model/thinking overrides survive restart and restore the main agent
     thinkingLevel: "low",
   });
   expect((await harness.snapshot(OrchestrationDoc, context))!.inlineContext).toBeUndefined();
+}, 15000);
+
+test("an admitted legacy inline cron retains its workspace after restart", async () => {
+  const { faux, open } = await fixture(100);
+  let { harness, main } = await open();
+  await main.configure({ cwd: "/tmp" }, context);
+  let requests = 0;
+  faux.setResponses([
+    () => {
+      requests++;
+      return fauxAssistantMessage([fauxText("working ".repeat(1000))]);
+    },
+  ]);
+  const marker = `<batty-cron-context>${JSON.stringify({ cwd: "/var/tmp", runId: "legacy-run" })}</batty-cron-context>\nlegacy cron task`;
+  await main.submit({ type: "input", content: marker }, context);
+  await until(async () => requests === 1);
+  expect((await main.agent(context)).cwd).toBe("/var/tmp");
+  await harness.close(context);
+  faux.setResponses([
+    async () => {
+      expect((await main.agent(context)).cwd).toBe("/var/tmp");
+      return fauxAssistantMessage([fauxText("legacy task completed")]);
+    },
+  ]);
+  ({ harness, main } = await open());
+  harness.resume();
+  await main.waitForIdle(context);
+  expect((await main.agent(context)).cwd).toBe("/tmp");
 }, 15000);
 
 test("stopping an active inline cron preserves queued user input and restores scoped settings", async () => {

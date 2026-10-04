@@ -13,6 +13,7 @@ import type {
 } from "@/shared/types";
 import { sanitizeTerminalBlocks, stripTerminalFormatting } from "./terminal-output";
 import { agentTurnArtifactsByReplyEntryId } from "./agent-turn-file-changes";
+import { buildRuntimeNoticeMessage, decodeRuntimeNotice } from "./runtime-notices";
 
 export type UiImageResolver = (image: {
   mimeType: string;
@@ -291,6 +292,9 @@ export function normalizeMessage(
   }
 
   if (message.role === "user") {
+    const notice = decodeRuntimeNotice(message.content);
+    if (notice)
+      return normalizeMessage(buildRuntimeNoticeMessage(notice, message.timestamp), index, options);
     return {
       id: messageId("user", message.timestamp, index),
       role: "user",
