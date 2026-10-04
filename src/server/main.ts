@@ -1,0 +1,557 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { createReadStream } from "node:fs";
+import fastify from "fastify";
+import cookie from "@fastify/cookie";
+import multipart from "@fastify/multipart";
+import staticFiles from "@fastify/static";
+import type { ModelThinkingLevel, UserMessage } from "@earendil-works/pi-ai";
+import type { SubmissionId } from "@earendil-works/pi-durable";
+import { loadConfig, resolveBattyDir, readEnvironmentFile, updateEnvironmentFile } from "./config";
+import { stateDirPath, setAppearance, setBraveSearchKey, setDefaultModel } from "./options";
+import { listWorkspaces } from "./workspaces";
+import { PasskeyAuthService, formatSetupCode } from "./passkeys";
+import { verifyAuthToken } from "./auth";
+import { createLoginRateLimiter } from "./login-rate-limit";
+import { registerAuthRoutes } from "./routes/auth";
+import { registerSiteRoutes } from "./routes/sites";
+import { registerMcpRoutes } from "./routes/mcp";
+import { Runtime, context } from "./runtime";
+import { acquireLock } from "./lock";
+import { retainInput } from "./input-receipts";
+import { preparePromptFiles, resolveUploadedFile, type UploadedFile } from "./uploads";
+import { resolveSentFile } from "./send-files";
+import type { AppColor } from "@/shared/appearance";
+
+const config = await loadConfig(resolveBattyDir());
+await fs.mkdir(stateDirPath(config.battyDir), { recursive: true });
+const releaseLock = await acquireLock(path.join(stateDirPath(config.battyDir), "runtime.lock"));
+const runtime = await Runtime.open(config);
+const passkeys = new PasskeyAuthService(config.battyDir, config.authSecret);
+const setup = await passkeys.initialize();
+if (setup)
+  console.log(
+    `Setup code: ${formatSetupCode(setup.code)} (expires ${new Date(setup.expiresAt).toISOString()})`,
+  );
+const app = fastify({
+  logger: true,
+  trustProxy: ["127.0.0.1", "::1"],
+  bodyLimit: 100 * 1024 * 1024,
+});
+await app.register(cookie);
+await app.register(multipart, { limits: { fileSize: 100 * 1024 * 1024 } });
+app.decorateRequest("auth", false);
+declare module "fastify" {
+  interface FastifyRequest {
+    auth: boolean;
+  }
+}
+const publicApis = new Set([
+  "/api/bootstrap",
+  "/api/version",
+  "/api/logout",
+  "/api/auth/login/options",
+  "/api/auth/login/verify",
+  "/api/auth/register/options",
+  "/api/auth/register/verify",
+]);
+app.addHook("onRequest", async (request, reply) => {
+  request.auth = verifyAuthToken(config.authSecret, request.cookies[config.cookieName]);
+  const pathname = request.url.split("?", 1)[0]!;
+  if (pathname.startsWith("/api/") && !publicApis.has(pathname) && !request.auth)
+    return reply.code(401).send({ error: "Authentication required" });
+});
+const routeContext = {
+  app,
+  config,
+  passkeys,
+  authAttemptLimiter: createLoginRateLimiter(),
+  routePath: (route: string) => route,
+};
+registerAuthRoutes(routeContext);
+registerSiteRoutes(routeContext);
+registerMcpRoutes({ ...routeContext, mcp: runtime.tools.mcp });
+const buildId =
+  process.env.BATTY_BUILD_ID ??
+  (
+    await fs
+      .readFile(path.join(config.selfPath, "BUILD_ID"), "utf8")
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return "dev";
+        throw error;
+      })
+  ).trim();
+function settingsStatus() {
+  return {
+    braveSearchConfigured: Boolean(config.braveSearchKey),
+    defaultProvider: config.defaultProvider,
+    defaultModel: config.defaultModel,
+    defaultThinkingLevel: config.defaultThinkingLevel,
+    appearance: { title: config.appTitle, color: config.appColor },
+  };
+}
+app.get("/healthz", async () => ({ ok: true, mainSessionId: String(runtime.main.id), buildId }));
+app.get("/api/version", async () => ({ buildId }));
+app.get("/api/bootstrap", async (request) => ({
+  authenticated: request.auth,
+  auth: request.auth
+    ? await passkeys.getStatus()
+    : {
+        passkeyCount: 0,
+        passkeyLoginAvailable: false,
+        registrationOpen: false,
+        setupRequired: false,
+      },
+  providerAuth: request.auth ? runtime.providerAuth.getStatus() : { providers: [] },
+  settings: settingsStatus(),
+  buildId,
+  workspaceRoots: request.auth ? config.workspacesRoots : [],
+  workspaces: request.auth ? await listWorkspaces(config) : [],
+  workspaceUiSettings: {},
+  workspaceSnapshots: [],
+  models: request.auth ? await runtime.listModels() : [],
+}));
+app.get("/api/workspaces", async () => ({ workspaces: await listWorkspaces(config) }));
+app.get("/api/models", async () => runtime.listModels());
+app.get<{ Params: { sessionId: string } }>(
+  "/api/sessions/:sessionId/resources",
+  async (request) => {
+    const conversation = await runtime.conversation(request.params.sessionId);
+    const agent = await conversation.agent(context);
+    return {
+      skills: runtime.resources.skills(agent.cwd ?? config.selfPath).map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        filePath: skill.filePath,
+      })),
+      tools: agent.tools.map((tool) => ({ name: tool.name, description: tool.description })),
+    };
+  },
+);
+app.get<{ Params: { sessionId: string } }>(
+  "/api/sessions/:sessionId/subagents",
+  async (request) => {
+    const conversation = await runtime.conversation(request.params.sessionId);
+    return (await runtime.orchestration.listRunning(conversation.id)).map((worker) => ({
+      ...worker,
+      sessionPath: `durable:${worker.sessionId}`,
+      parentSessionId: String(worker.parentId),
+      model: config.defaultModel,
+      thinkingLevel: config.defaultThinkingLevel,
+      startedAtMs: 0,
+    }));
+  },
+);
+function scheduleLabel(schedule: {
+  kind: string;
+  at?: string;
+  every?: string;
+  expression?: string;
+  timezone?: string;
+}) {
+  return schedule.kind === "at"
+    ? `At ${schedule.at}`
+    : schedule.kind === "every"
+      ? `Every ${schedule.every}`
+      : `${schedule.expression} (${schedule.timezone})`;
+}
+app.get<{ Params: { workspaceId: string } }>(
+  "/api/workspaces/:workspaceId/cron-jobs",
+  async (request) =>
+    (await runtime.orchestration.listJobs(request.params.workspaceId)).map((job) => ({
+      ...job,
+      model: job.model ?? `${config.defaultProvider}/${config.defaultModel}`,
+      thinkingLevel: job.thinkingLevel ?? config.defaultThinkingLevel,
+      scheduleLabel: scheduleLabel(job.schedule),
+      state: { nextRunAtMs: job.nextAt },
+    })),
+);
+app.get<{ Params: { workspaceId: string } }>(
+  "/api/workspaces/:workspaceId/cron-run-logs",
+  async (request) => {
+    const jobs = await runtime.orchestration.listJobs();
+    return (
+      await runtime.orchestration.listRunLogs(undefined, 100, request.params.workspaceId)
+    ).map((run) => {
+      const job = jobs.find((item) => item.id === run.jobId);
+      return {
+        runId: run.id,
+        jobId: run.jobId,
+        workspaceId: run.workspaceId,
+        prompt: job?.prompt ?? "",
+        model: job?.model ?? `${config.defaultProvider}/${config.defaultModel}`,
+        thinkingLevel: job?.thinkingLevel ?? config.defaultThinkingLevel,
+        session: job?.session ?? { kind: "new" },
+        scheduleLabel: job ? scheduleLabel(job.schedule) : "",
+        startedAtMs: run.startedAt,
+        sessionId: run.sessionId,
+        sessionPath: `durable:${run.sessionId}`,
+        status:
+          run.status === "running" ? "running" : run.status === "completed" ? "success" : "error",
+        completedAtMs: run.finishedAt,
+        durationMs: run.finishedAt ? run.finishedAt - run.startedAt : undefined,
+        error: run.status === "failed" ? run.output : undefined,
+      };
+    });
+  },
+);
+app.get("/api/memory/status", async () => runtime.memory.status());
+app.get("/api/main", async () => runtime.state());
+app.get<{ Querystring: { before?: string; limit?: string } }>(
+  "/api/main/messages",
+  async (request) =>
+    runtime.messages(
+      "main",
+      request.query.before,
+      request.query.limit ? Number(request.query.limit) : undefined,
+    ),
+);
+app.get<{ Params: { sessionId: string } }>("/api/sessions/:sessionId", async (request) =>
+  runtime.state(request.params.sessionId),
+);
+app.get<{ Params: { sessionId: string }; Querystring: { before?: string; limit?: string } }>(
+  "/api/sessions/:sessionId/messages",
+  async (request) =>
+    runtime.messages(
+      request.params.sessionId,
+      request.query.before,
+      request.query.limit ? Number(request.query.limit) : undefined,
+    ),
+);
+
+const eventStreams = new Set<import("node:http").ServerResponse>();
+for (const url of ["/api/main/events", "/api/sessions/:sessionId/events"]) {
+  app.get<{ Params: { sessionId?: string } }>(url, async (request, reply) => {
+    const conversation = await runtime.conversation(request.params.sessionId ?? "main");
+    const watch = await conversation.watch(context);
+    reply.hijack();
+    eventStreams.add(reply.raw);
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    let closed = false;
+    let lastEntry: number | undefined;
+    const writeEvent = (event: object) => {
+      if (!closed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    let sendQueue = Promise.resolve();
+    const send = (value: typeof watch.value, metadataOnly = false) => {
+      sendQueue = sendQueue
+        .then(async () => {
+          if (closed) return;
+          const tail = value.entries.at(-1)?.id;
+          const reset = !metadataOnly && (lastEntry === undefined || tail !== lastEntry);
+          const state = await runtime.state(String(conversation.id), value, reset);
+          if (reset) {
+            lastEntry = tail;
+            writeEvent({
+              type: "reset",
+              state,
+              streamId: runtime.streamId,
+              revision: state.revision,
+            });
+          } else {
+            const {
+              messages: _messages,
+              messagesDetailLevel: _detail,
+              hasMoreMessages: _more,
+              activeAssistant,
+              activeTools,
+              ...metadata
+            } = state;
+            writeEvent({
+              type: "state",
+              state: metadata,
+              streamId: runtime.streamId,
+              revision: state.revision,
+            });
+            writeEvent({
+              type: "assistant",
+              assistant: activeAssistant,
+              streamId: runtime.streamId,
+              revision: runtime.nextRevision(),
+            });
+            writeEvent({
+              type: "tools",
+              tools: activeTools,
+              streamId: runtime.streamId,
+              revision: runtime.nextRevision(),
+            });
+          }
+        })
+        .catch((error) => {
+          app.log.error(error);
+          writeEvent({ type: "error", message: String(error) });
+        });
+      return sendQueue;
+    };
+    let memoryState = JSON.stringify({
+      pending: runtime.memory.status().pending > 0,
+      error: runtime.memory.status().error,
+    });
+    const memoryTimer = setInterval(() => {
+      const next = JSON.stringify({
+        pending: runtime.memory.status().pending > 0,
+        error: runtime.memory.status().error,
+      });
+      if (next === memoryState) return;
+      memoryState = next;
+      void send(watch.value, true);
+    }, 2000);
+    request.raw.on("close", () => {
+      closed = true;
+      clearInterval(memoryTimer);
+      eventStreams.delete(reply.raw);
+      clearInterval(heartbeat);
+      void watch.stop();
+    });
+    const heartbeat = setInterval(() => {
+      if (!closed) reply.raw.write(": heartbeat\n\n");
+    }, 20_000);
+    await send(watch.value);
+    watch.start(async (value, ops) => {
+      if (ops.length) await send(value);
+    });
+  });
+}
+for (const url of ["/api/main/prompt", "/api/main/steer"]) {
+  app.post(url, async (request) => {
+    let text = "",
+      clientMessageId: string | undefined;
+    const files: UploadedFile[] = [];
+    if (request.isMultipart()) {
+      for await (const part of request.parts()) {
+        if (part.type === "file")
+          files.push({
+            filename: part.filename,
+            mimetype: part.mimetype,
+            data: await part.toBuffer(),
+          });
+        else if (part.fieldname === "text") text = String(part.value);
+        else if (part.fieldname === "clientMessageId") clientMessageId = String(part.value);
+      }
+    } else {
+      const body = request.body as { text: string; clientMessageId?: string };
+      text = body.text;
+      clientMessageId = body.clientMessageId;
+    }
+    if (!text.trim() && !files.length)
+      throw Object.assign(new Error("Missing message"), { statusCode: 400 });
+    const attachments = await preparePromptFiles(
+      config.uploadsDir,
+      String(runtime.main.id),
+      files,
+      config.baseUrl,
+    );
+    await runtime.tools.syncConversation(runtime.main, context);
+    const wasBusy = (await runtime.state("main", undefined, false)).isStreaming;
+    const content: UserMessage["content"] = [
+      { type: "text", text: [text, attachments.text].filter(Boolean).join("\n\n") },
+      ...attachments.images,
+    ];
+    const submission = await runtime.main.submit(
+      {
+        type: "input",
+        content,
+        requestId: clientMessageId,
+        whenBusy: url.endsWith("steer") ? "steer" : "followUp",
+      },
+      context,
+    );
+    await retainInput(runtime.main, submission.id, content, clientMessageId);
+    return {
+      disposition: wasBusy ? "queued" : "started",
+      submissionId: String(submission.id),
+      sessionId: String(runtime.main.id),
+    };
+  });
+}
+app.post("/api/main/stop", async () => {
+  await runtime.tools.abortConversation(runtime.main.id);
+  await runtime.main.abort(context);
+  return { ok: true };
+});
+app.delete<{ Params: { submissionId: string } }>(
+  "/api/main/queue/:submissionId",
+  async (request) => ({
+    result: await runtime.harness.abortSubmission(
+      Number(request.params.submissionId) as SubmissionId,
+      context,
+      runtime.main.id,
+    ),
+  }),
+);
+app.patch<{ Body: { model?: string; modelId?: string } }>("/api/main/model", async (request) => {
+  await runtime.setModel(request.body.model ?? request.body.modelId!);
+  return runtime.state();
+});
+app.patch<{ Body: { thinkingLevel: ModelThinkingLevel } }>(
+  "/api/main/thinking",
+  async (request) => {
+    await runtime.main.configure({ thinkingLevel: request.body.thinkingLevel }, context);
+    return runtime.state();
+  },
+);
+app.post<{ Body: { kind: string; index: number } }>("/api/main/queue/remove", async (request) => {
+  await runtime.harness.abortSubmission(
+    Number(request.body.index) as SubmissionId,
+    context,
+    runtime.main.id,
+  );
+  return runtime.state();
+});
+app.get("/api/provider-auth/status", async () => runtime.providerAuth.getStatus());
+app.get<{ Querystring: { provider: string; model: string } }>(
+  "/api/provider-usage",
+  async (request) => runtime.providerUsage.getUsage(request.query.provider, request.query.model),
+);
+app.post("/api/provider-auth/openai/start", async () => runtime.providerAuth.start("openai"));
+app.get<{ Params: { attemptId: string } }>(
+  "/api/provider-auth/openai/attempt/:attemptId",
+  async (request) => runtime.providerAuth.getAttemptStatus(request.params.attemptId),
+);
+app.post<{ Body: { attemptId: string; callbackUrl: string } }>(
+  "/api/provider-auth/openai/complete",
+  async (request) => {
+    await runtime.providerAuth.complete(request.body.attemptId, request.body.callbackUrl);
+    return runtime.providerAuth.getStatus();
+  },
+);
+app.post<{ Body: { providerId: string; apiKey: string } }>(
+  "/api/provider-auth/api-key",
+  async (request) => {
+    await runtime.models.setRuntimeApiKey(request.body.providerId, request.body.apiKey);
+    return runtime.providerAuth.getStatus();
+  },
+);
+app.post<{ Body: { providerId: string } }>("/api/provider-auth/logout", async (request) => {
+  await runtime.models.logout(request.body.providerId);
+  return runtime.providerAuth.getStatus();
+});
+app.post<{ Body: { apiKey: string } }>("/api/settings/brave-search", async (request) => {
+  config.braveSearchKey = (
+    await setBraveSearchKey(config.battyDir, request.body.apiKey)
+  ).braveSearchKey;
+  return settingsStatus();
+});
+app.post<{ Body: { title: string; color: AppColor } }>(
+  "/api/settings/appearance",
+  async (request) => {
+    const settings = await setAppearance(config.battyDir, request.body.title, request.body.color);
+    config.appTitle = settings.appTitle;
+    config.appColor = settings.appColor;
+    return settingsStatus();
+  },
+);
+app.post<{ Body: { modelId: string; thinkingLevel: string } }>(
+  "/api/settings/default-model",
+  async (request) => {
+    const slash = request.body.modelId.indexOf("/");
+    const settings = await setDefaultModel(
+      config.battyDir,
+      request.body.modelId.slice(0, slash),
+      request.body.modelId.slice(slash + 1),
+      request.body.thinkingLevel,
+    );
+    Object.assign(config, {
+      defaultProvider: settings.defaultProvider,
+      defaultModel: settings.defaultModel,
+      defaultThinkingLevel: settings.defaultThinkingLevel,
+    });
+    return settingsStatus();
+  },
+);
+app.get("/api/settings/environment", async () => ({
+  names: Object.keys(await readEnvironmentFile(config.battyDir)).sort(),
+}));
+app.put<{ Params: { name: string }; Body: { value: string } }>(
+  "/api/settings/environment/:name",
+  async (request) => ({
+    names: await updateEnvironmentFile(config.battyDir, request.params.name, request.body.value),
+  }),
+);
+app.delete<{ Params: { name: string } }>("/api/settings/environment/:name", async (request) => ({
+  names: await updateEnvironmentFile(config.battyDir, request.params.name),
+}));
+app.get("/api/settings/agents", async () => ({
+  content: await fs.readFile(path.join(stateDirPath(config.battyDir), "AGENTS.md"), "utf8"),
+}));
+app.post<{ Body: { content: string } }>("/api/settings/agents", async (request) => {
+  await fs.writeFile(path.join(stateDirPath(config.battyDir), "AGENTS.md"), request.body.content);
+  return { content: request.body.content };
+});
+app.get("/api/auth/status", async () => passkeys.getStatus());
+app.post("/api/auth/setup-code", async () => passkeys.issueSetupCode("settings"));
+app.get<{ Params: { sessionId: string; batchId: string; name: string } }>(
+  "/api/uploads/:sessionId/:batchId/:name",
+  async (request, reply) => {
+    const file = await resolveUploadedFile(
+      config.uploadsDir,
+      request.params.sessionId,
+      request.params.batchId,
+      request.params.name,
+    );
+    return reply.type(file.mimeType).send(createReadStream(file.path));
+  },
+);
+app.get<{
+  Params: { workspaceId: string; sessionId: string; toolCallId: string; fileId: string };
+  Querystring: { download?: string };
+}>("/api/sent-files/:workspaceId/:sessionId/:toolCallId/:fileId", async (request, reply) => {
+  const file = await resolveSentFile({
+    rootDir: config.sentFilesDir,
+    baseUrl: config.baseUrl,
+    ...request.params,
+  });
+  reply.type(file.descriptor.mimeType);
+  if (request.query.download)
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.descriptor.name)}`,
+    );
+  return reply.send(createReadStream(file.storedPath));
+});
+
+const index = await fs.readFile(path.join(config.publicDir, "index.html"), "utf8");
+app.get("/manifest.webmanifest", async () => ({
+  name: config.appTitle,
+  short_name: config.appTitle,
+  display: "standalone",
+  start_url: "/",
+  scope: "/",
+  theme_color: "#ffffff",
+  background_color: "#ffffff",
+  icons: [
+    { src: "/pwa-192.png", sizes: "192x192", type: "image/png" },
+    { src: "/pwa-512.png", sizes: "512x512", type: "image/png" },
+  ],
+}));
+await app.register(staticFiles, { root: config.publicDir, prefix: "/" });
+app.get("/", async (_request, reply) => reply.type("text/html").send(index));
+app.setNotFoundHandler((request, reply) =>
+  request.url.startsWith("/api/")
+    ? reply.code(404).send({ error: "Not found" })
+    : reply.type("text/html").send(index),
+);
+app.setErrorHandler((error, request, reply) => {
+  request.log.error(error);
+  const failure = error as Error & { statusCode?: number };
+  reply.code(failure.statusCode ?? 500).send({ error: failure.message });
+});
+let closing = false;
+async function shutdown() {
+  if (closing) return;
+  closing = true;
+  // Close the harness first: checkpoint work, do not drain or cancel admitted runs.
+  await runtime.close();
+  for (const stream of eventStreams) stream.end();
+  await app.close();
+  await releaseLock();
+  process.exit(0);
+}
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());
+await app.listen({ host: config.host, port: config.port });

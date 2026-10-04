@@ -14,6 +14,7 @@ const props = defineProps<{
   actionsDisabled?: boolean;
   streaming?: boolean;
   compacting?: boolean;
+  memoryPending?: number;
   subagentCount?: number;
   offline?: boolean;
   error?: string;
@@ -412,10 +413,11 @@ defineExpose({ clear, restore });
         </button>
 
         <StreamingStopControl
-          v-if="props.streaming || props.subagentCount"
+          v-if="props.streaming || props.compacting || props.memoryPending || props.subagentCount"
           class="composer__stream-actions"
           :disabled="actionsDisabled"
           :compacting="props.compacting"
+          :status-label="props.memoryPending ? 'Preparing memory' : undefined"
           :subagent-count="props.streaming ? 0 : props.subagentCount"
           :hide-stop="!props.streaming"
           @stop="emit('stop')"

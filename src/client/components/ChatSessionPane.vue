@@ -5,6 +5,7 @@ import MessageComposer from "@/client/components/MessageComposer.vue";
 import SessionTranscriptView from "@/client/components/SessionTranscriptView.vue";
 import { listRunningSubagents } from "@/client/lib/api";
 import { resolveThinkingOptions } from "@/client/lib/thinking-levels";
+import { promptSubmissionId, retainPromptRetry, clearPromptRetry } from "@/client/lib/prompt-retry";
 import { useAppStore } from "@/client/stores/app";
 import type { QueuedPrompt, UiMessage } from "@/shared/types";
 
@@ -18,6 +19,7 @@ const composer = ref<ComposerHandle | null>(null);
 const promptError = ref<string>();
 const subagentCount = ref(0);
 const subagentError = ref<string>();
+const memoryError = ref<string>();
 const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSession));
 const pendingIdlePromptSessionIds = new Set<string>();
 let promptRequestId = 0;
@@ -73,6 +75,32 @@ watch(
   },
   { immediate: true },
 );
+watch(
+  [() => store.activeSession?.isCompacting, isUnavailable],
+  ([preparing, offline], _previous, onCleanup) => {
+    memoryError.value = undefined;
+    if (!preparing) store.memoryStatus = undefined;
+    if (!preparing || offline) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    onCleanup(() => {
+      cancelled = true;
+      clearTimeout(timer);
+    });
+    async function refresh() {
+      try {
+        await store.refreshMemoryStatus();
+      } catch (error) {
+        if (!cancelled) memoryError.value = error instanceof Error ? error.message : String(error);
+      } finally {
+        if (!cancelled) timer = setTimeout(() => void refresh(), 1500);
+      }
+    }
+    void refresh();
+  },
+  { immediate: true },
+);
+
 const currentModelOption = computed(() =>
   store.models.find((model) => model.id === store.activeSession?.model),
 );
@@ -193,8 +221,8 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
 
   const requestId = ++promptRequestId;
   promptError.value = undefined;
+  const clientMessageId = promptSubmissionId(sessionId!, "prompt", text, files);
   composer.value?.clear();
-  const clientMessageId = crypto.randomUUID();
   const optimisticId =
     gateSessionId && !text.trimStart().startsWith("/")
       ? addOptimisticMessage(gateSessionId, clientMessageId, text, files)
@@ -204,14 +232,21 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
   }
   try {
     await store.sendPrompt(text, files, clientMessageId);
+    clearPromptRetry(sessionId!, clientMessageId);
     if (gateSessionId && optimisticId) {
       removeOptimisticMessage(gateSessionId, optimisticId);
     }
   } catch (error) {
-    if (sessionId && !wasPromptAccepted(sessionId, clientMessageId)) {
+    if (sessionId && wasPromptAccepted(sessionId, clientMessageId)) {
+      clearPromptRetry(sessionId, clientMessageId);
+      if (optimisticId) removeOptimisticMessage(sessionId, optimisticId);
+      return;
+    }
+    if (sessionId) {
       if (optimisticId) {
         removeOptimisticMessage(sessionId, optimisticId);
       }
+      retainPromptRetry(sessionId, "prompt", text, files, clientMessageId);
       composer.value?.restore(sessionId, text, files);
     }
     showPromptError(error, sessionId, requestId);
@@ -259,15 +294,21 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
 
   const requestId = ++promptRequestId;
   promptError.value = undefined;
+  const clientMessageId = promptSubmissionId(sessionId!, "steer", text, files);
   composer.value?.clear();
-  const clientMessageId = crypto.randomUUID();
   if (gateSessionId) {
     pendingIdlePromptSessionIds.add(gateSessionId);
   }
   try {
     await store.steerPrompt(text, files, clientMessageId);
+    clearPromptRetry(sessionId!, clientMessageId);
   } catch (error) {
-    if (sessionId && !wasPromptAccepted(sessionId, clientMessageId)) {
+    if (sessionId && wasPromptAccepted(sessionId, clientMessageId)) {
+      clearPromptRetry(sessionId, clientMessageId);
+      return;
+    }
+    if (sessionId) {
+      retainPromptRetry(sessionId, "steer", text, files, clientMessageId);
       composer.value?.restore(sessionId, text, files);
     }
     showPromptError(error, sessionId, requestId);
@@ -303,10 +344,11 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
         ref="composer"
         :streaming="store.activeSession.isStreaming"
         :compacting="store.activeSession.isCompacting"
+        :memory-pending="store.memoryStatus?.pending"
         :subagent-count="subagentCount"
         :session-key="store.activeSession.sessionId"
         :offline="isUnavailable"
-        :error="promptError ?? subagentError ?? store.lastError"
+        :error="promptError ?? memoryError ?? subagentError ?? store.lastError"
         :actions-disabled="isUnavailable"
         :queued-prompts="store.activeSession.queuedPrompts"
         :model-popover-id="MODEL_POPOVER_ID"

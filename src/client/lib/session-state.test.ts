@@ -52,6 +52,45 @@ describe("main transcript resets", () => {
     ]);
     expect(merged.messages[1]).toEqual(message("entry-beta", "Updated"));
   });
+  it("keeps pagination exhausted across windowed resets that contain fewer messages", () => {
+    const previous = {
+      ...state([message("a"), message("b"), message("c"), message("d")], 4),
+      hasMoreMessages: false,
+    };
+    const incoming = state([message("c"), message("d")], 5);
+    const merged = applyServerEvent(previous, {
+      type: "reset",
+      state: incoming,
+      revision: 5,
+      streamId: "durable-main",
+    })!;
+    expect(merged.messages.map((item) => item.id)).toEqual(["a", "b", "c", "d"]);
+    expect(merged.hasMoreMessages).toBe(false);
+    const grown = applyServerEvent(merged, {
+      type: "reset",
+      state: { ...state([message("d"), message("e")], 6), totalMessageCount: 5 },
+      revision: 6,
+      streamId: "durable-main",
+    })!;
+    expect(grown.messages).toHaveLength(5);
+    expect(grown.hasMoreMessages).toBe(false);
+  });
+  it("keeps pagination available when retained history has gaps", () => {
+    const previous = {
+      ...state([message("a"), message("b")], 4),
+      hasMoreMessages: false,
+      totalMessageCount: 2,
+    };
+    const incoming = state([message("c"), message("d")], 5);
+    const merged = applyServerEvent(previous, {
+      type: "reset",
+      state: incoming,
+      revision: 5,
+      streamId: "durable-main",
+    })!;
+    expect(merged.messages.map((item) => item.id)).toEqual(["c", "d"]);
+    expect(merged.hasMoreMessages).toBe(true);
+  });
   it("does not roll the transcript back when a stale snapshot arrives", () => {
     const current = state([message("entry-latest")], 8);
     expect(

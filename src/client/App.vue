@@ -8,7 +8,7 @@ const offline = () => {
   store.connectionState = "offline";
 };
 const online = () => {
-  if (store.authenticated) store.openStream();
+  void store.recoverConnection();
 };
 onMounted(() => {
   window.addEventListener("offline", offline);
@@ -30,8 +30,14 @@ watch(
 <template>
   <div class="app-shell">
     <div v-if="!store.bootstrapped" class="center-panel">
-      <div class="spinner" />
-      <p>Booting Batty…</p>
+      <template v-if="store.bootstrapFailed">
+        <p role="alert">{{ store.lastError }}</p>
+        <button type="button" @click="store.bootstrap()">Retry</button>
+      </template>
+      <template v-else
+        ><div class="spinner" />
+        <p>Booting Batty…</p></template
+      >
     </div>
     <RouterView v-else />
   </div>

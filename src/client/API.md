@@ -7,9 +7,10 @@ The authenticated root route contains one main chat. Workspace listings never se
 - `GET /api/bootstrap`: existing `BootstrapPayload` auth/provider/settings/models fields. The client does not consume workspace snapshots or daily-session data.
 - `GET /api/workspaces`: `{ workspaces: WorkspaceInfo[] }`.
 - `GET /api/main`: `SessionState`, full latest message window.
+- `GET /api/memory/status`: `{ pending, totalLeaves, builtLeaves, error? }`; polled while main state reports `isCompacting`. Pending work displays “Preparing memory”; prompt submission remains enabled.
 - `GET /api/main/messages?before=<durable entry id>&limit=50`: `SessionMessagesPage`.
 - `GET /api/main/events`: SSE JSON `ServerEvent`. Full reset snapshots merge overlapping messages while preserving paginated history. Durable entry IDs need not be numeric.
-- `POST /api/main/prompt` and `POST /api/main/steer`: multipart `text`, `clientMessageId`, repeated `files`; return `{ disposition: 'started' | 'queued', submissionId, sessionId }`. Optimistic messages are removed after HTTP acceptance; durable user messages need not carry `clientMessageId`.
+- `POST /api/main/prompt` and `POST /api/main/steer`: multipart `text`, `clientMessageId`, repeated `files`; return `{ disposition: 'started' | 'queued', submissionId, sessionId }`. Optimistic messages are removed after HTTP acceptance. On uncertain delivery, the restored draft retains its original `clientMessageId` for a deduplicated retry. State/queued `clientMessageId` mappings can confirm acceptance when an HTTP response is lost.
 - `POST /api/main/stop`: `{ ok: true }`.
 - `PATCH /api/main/model`: `{ model: string }`; return `SessionState`.
 - `PATCH /api/main/thinking`: `{ thinkingLevel: string }`; return `SessionState`.

@@ -286,6 +286,15 @@ export function listWorkspaceCronRunLogs(workspaceId: string): Promise<CronRunLo
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/cron-run-logs`);
 }
 
+export function getMemoryStatus(): Promise<{
+  pending: number;
+  totalLeaves: number;
+  builtLeaves: number;
+  error?: string;
+}> {
+  return request("/api/memory/status");
+}
+
 export function getMain(): Promise<SessionState> {
   return request("/api/main");
 }

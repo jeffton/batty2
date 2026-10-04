@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { withBaseUrl } from "@/client/lib/base-url";
 import { applyAppAppearance } from "@/client/lib/appearance";
 import * as api from "@/client/lib/api";
-import { applyServerEvent } from "@/client/lib/session-events";
+import { applyServerEvent, applySessionResponse } from "@/client/lib/session-events";
 import { mergeSessionState } from "@/client/lib/session-state";
 import { createAppState } from "./app-state";
 import { providerSettingsActions } from "./app-provider-settings";
@@ -16,6 +16,7 @@ export const useAppStore = defineStore("app", {
       try {
         const payload = await api.getBootstrap();
         this.authenticated = payload.authenticated;
+        this.bootstrapped = true;
         this.auth = payload.auth;
         this.providerAuth = payload.providerAuth;
         this.settings = payload.settings;
@@ -25,13 +26,27 @@ export const useAppStore = defineStore("app", {
           this.workspaces = await api.listWorkspaces();
           this.activeSession = mergeSessionState(await api.getMain(), this.activeSession);
           this.openStream();
+        } else {
+          this.closeStream();
+          this.activeSession = undefined;
         }
+        this.bootstrapFailed = false;
+        this.lastError = undefined;
       } catch (error) {
+        this.bootstrapFailed = true;
         this.lastError = error instanceof Error ? error.message : String(error);
         this.connectionState = "offline";
-      } finally {
-        this.bootstrapped = true;
       }
+    },
+    async recoverConnection() {
+      if (this.bootstrapFailed || !this.bootstrapped || !this.activeSession) await this.bootstrap();
+      else if (this.authenticated) this.openStream();
+    },
+    async refreshMemoryStatus() {
+      const status = await api.getMemoryStatus();
+      if (!this.activeSession?.isCompacting) return;
+      this.memoryStatus = status;
+      if (status.error) this.lastError = status.error;
     },
     openStream() {
       this.closeStream();
@@ -72,22 +87,19 @@ export const useAppStore = defineStore("app", {
       await api.stopMain();
     },
     async setModel(model: string) {
-      this.activeSession = mergeSessionState(
-        await api.patchMain("model", { model }),
-        this.activeSession,
-      );
+      const streamId = this.activeSession?.streamId;
+      const response = await api.patchMain("model", { model });
+      this.activeSession = applySessionResponse(this.activeSession, response, streamId);
     },
     async setThinkingLevel(thinkingLevel: string) {
-      this.activeSession = mergeSessionState(
-        await api.patchMain("thinking", { thinkingLevel }),
-        this.activeSession,
-      );
+      const streamId = this.activeSession?.streamId;
+      const response = await api.patchMain("thinking", { thinkingLevel });
+      this.activeSession = applySessionResponse(this.activeSession, response, streamId);
     },
     async removeQueuedPrompt(kind: "steer" | "followUp", index: number) {
-      this.activeSession = mergeSessionState(
-        await api.removeMainQueuedPrompt(kind, index),
-        this.activeSession,
-      );
+      const streamId = this.activeSession?.streamId;
+      const response = await api.removeMainQueuedPrompt(kind, index);
+      this.activeSession = applySessionResponse(this.activeSession, response, streamId);
     },
     async loadOlderMessages() {
       const current = this.activeSession;

@@ -86,6 +86,23 @@ function mergeTools(previous: ActiveToolRun[], incoming: ActiveToolRun[]): Activ
   return [...byId.values()];
 }
 
+// HTTP snapshots cannot replace a newer SSE revision or cross the stream
+// generation in which the mutation request was issued.
+export function applySessionResponse(
+  state: SessionState | undefined,
+  incoming: SessionState,
+  requestedStreamId: string | undefined,
+): SessionState | undefined {
+  if (state?.streamId !== requestedStreamId) return state;
+  if (state?.streamId && incoming.streamId !== state.streamId) return state;
+  return applyServerEvent(state, {
+    type: "reset",
+    state: incoming,
+    revision: incoming.revision,
+    streamId: incoming.streamId,
+  });
+}
+
 export function applyServerEvent(
   state: SessionState | undefined,
   event: ServerEvent,

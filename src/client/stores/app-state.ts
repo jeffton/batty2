@@ -13,6 +13,10 @@ export function createAppState() {
   return {
     authenticated: false,
     bootstrapped: false,
+    bootstrapFailed: false,
+    memoryStatus: undefined as
+      | { pending: number; totalLeaves: number; builtLeaves: number; error?: string }
+      | undefined,
     auth: {
       passkeyCount: 0,
       passkeyLoginAvailable: false,

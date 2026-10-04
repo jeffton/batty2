@@ -7,6 +7,13 @@ import ToolsPopover from "./ToolsPopover.vue";
 import CronPopover from "./CronPopover.vue";
 import SessionHeaderStatus from "./SessionHeaderStatus.vue";
 const store = useAppStore();
+async function logout() {
+  try {
+    await store.logout();
+  } catch (error) {
+    store.lastError = error instanceof Error ? error.message : String(error);
+  }
+}
 </script>
 <template>
   <header class="header">
@@ -70,7 +77,11 @@ const store = useAppStore();
         <p v-if="!store.workspaces.length" class="muted">No workspaces configured.</p>
       </div>
     </FullPopover>
-    <SettingsPopover popover-id="settings-popover" anchor-name="--settings-anchor" />
+    <SettingsPopover
+      popover-id="settings-popover"
+      anchor-name="--settings-anchor"
+      @logout="logout"
+    />
     <ToolsPopover popover-id="tools-popover" anchor-name="--tools-anchor" />
     <CronPopover popover-id="workers-popover" anchor-name="--workers-anchor" />
   </header>

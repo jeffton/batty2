@@ -79,9 +79,9 @@ export function normalizeSessionState(session: SessionState | undefined): Sessio
     ...session,
     availableThinkingLevels: [...new Set(session.availableThinkingLevels)],
     hasMoreMessages:
-      session.hasMoreMessages ||
-      (session.messagesDetailLevel !== "summary" &&
-        session.totalMessageCount > session.messages.length),
+      session.messagesDetailLevel === "summary"
+        ? session.hasMoreMessages
+        : session.totalMessageCount > session.messages.length,
   };
 }
 

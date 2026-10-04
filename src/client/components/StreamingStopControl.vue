@@ -5,6 +5,7 @@ const props = defineProps<{
   disabled?: boolean;
   label?: string;
   compacting?: boolean;
+  statusLabel?: string;
   subagentCount?: number;
   hideStop?: boolean;
 }>();
@@ -40,7 +41,9 @@ function triggerClick(): void {
 
 <template>
   <div class="streaming-stop-control">
-    <span v-if="props.compacting" class="streaming-stop-control__status">Compacting</span>
+    <span v-if="props.statusLabel || props.compacting" class="streaming-stop-control__status">{{
+      props.statusLabel ?? "Compacting"
+    }}</span>
     <span v-else-if="props.subagentCount" class="streaming-stop-control__status">
       {{ props.subagentCount }} {{ props.subagentCount === 1 ? "subagent" : "subagents" }}
     </span>
