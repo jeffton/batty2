@@ -22,11 +22,23 @@ import { retainInput } from "./input-receipts";
 import { preparePromptFiles, resolveUploadedFile, type UploadedFile } from "./uploads";
 import { resolveSentFile } from "./send-files";
 import type { AppColor } from "@/shared/appearance";
+import { WebPushService } from "./web-push";
+import { registerPushCompletions } from "./push-completions";
 
 const config = await loadConfig(resolveBattyDir());
 await fs.mkdir(stateDirPath(config.battyDir), { recursive: true });
 const releaseLock = await acquireLock(path.join(stateDirPath(config.battyDir), "runtime.lock"));
-const runtime = await Runtime.open(config);
+const webPush = new WebPushService(config);
+await webPush.initialize();
+let stopPushCompletions!: () => void;
+const runtime = await Runtime.open(config, {
+  resume: false,
+  beforeStart: (runtime) => {
+    stopPushCompletions = registerPushCompletions(runtime, webPush, (error) =>
+      console.error("Push completions", error),
+    );
+  },
+});
 const passkeys = new PasskeyAuthService(config.battyDir, config.authSecret);
 const setup = await passkeys.initialize();
 if (setup)
@@ -71,6 +83,19 @@ const routeContext = {
 registerAuthRoutes(routeContext);
 registerSiteRoutes(routeContext);
 registerMcpRoutes({ ...routeContext, mcp: runtime.tools.mcp });
+app.get("/api/push/public-key", async () => ({ publicKey: webPush.getPublicKey() }));
+app.post<{ Body: { subscription: PushSubscriptionJSON } }>(
+  "/api/push/subscriptions",
+  async (request) => {
+    await webPush.upsertSubscription(request.body.subscription);
+    return { ok: true };
+  },
+);
+app.post<{ Body: { endpoint: string } }>("/api/push/subscriptions/delete", async (request) => {
+  await webPush.removeSubscription(request.body.endpoint);
+  return { ok: true };
+});
+runtime.harness.resume();
 const buildId =
   process.env.BATTY_BUILD_ID ??
   (
@@ -546,6 +571,7 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   // Close the harness first: checkpoint work, do not drain or cancel admitted runs.
+  stopPushCompletions();
   await runtime.close();
   for (const stream of eventStreams) stream.end();
   await app.close();

@@ -156,7 +156,13 @@ export class Runtime {
     readonly providerUsage: ProviderUsageService,
   ) {}
 
-  static async open(config: AppConfig, { resume = true } = {}): Promise<Runtime> {
+  static async open(
+    config: AppConfig,
+    {
+      resume = true,
+      beforeStart,
+    }: { resume?: boolean; beforeStart?: (runtime: Runtime) => void | Promise<void> } = {},
+  ): Promise<Runtime> {
     const dir = stateDirPath(config.battyDir);
     await fs.mkdir(dir, { recursive: true });
     const authPath = process.env.BATTY_PROVIDER_AUTH_PATH ?? path.join(dir, "auth.json");
@@ -243,7 +249,6 @@ export class Runtime {
       memory.validateRequest(request, options);
       return streamSimple(model, request, options);
     };
-    await orchestration.bind(harness, main);
     const settings = SettingsManager.create(cwd, dir);
     const providerAuth = new ProviderAuthService(
       models,
@@ -303,6 +308,10 @@ export class Runtime {
       }
       conversationCursor = conversations.next;
     } while (conversationCursor);
+    // bind() admits due cron jobs and can resume the harness itself. Install
+    // completion observers before that startup boundary, not only before resume.
+    await beforeStart?.(runtime);
+    await orchestration.bind(harness, main);
     if (resume) harness.resume();
     return runtime;
   }

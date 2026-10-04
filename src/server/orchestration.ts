@@ -479,7 +479,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             {
               type: "input",
               content: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
-              whenBusy: "followUp",
+              whenBusy: task.input.runId ? "followUp" : "steer",
               requestId: `batty-report:${task.id}`,
             },
             ctx,
@@ -600,7 +600,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const subagent = defineTool({
     name: "subagent",
     description:
-      "Run, await, queue, resume, steer or stop durable workers. Async replies always reach the canonical main. Await yields this turn while work continues.",
+      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async; results steer a busy main. Await yields main turns; workers durably wait and receive the result.",
     replay: "safe",
     parameters: Type.Object({
       action: Type.Union(
@@ -627,6 +627,17 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const active =
         worker?.active === undefined ? undefined : await api.getTask(worker.active, ctx);
       const running = active !== undefined && active.state.status !== "terminal";
+      if (args.action === "await" && api.conversationId !== state!.mainId) {
+        // Worker turns have a delivery waiting for their final answer. Terminating
+        // here would settle that delivery with this tool call, not a final report.
+        const target = await api.memo("batty.await", worker!.active!, ctx);
+        const settled = await api.waitForTask(target, ctx);
+        return reply(
+          settled.state.outcome.status === "completed"
+            ? settled.state.outcome.result
+            : `Subagent ${settled.state.outcome.status}`,
+        );
+      }
       if (args.action === "await")
         return {
           ...reply(
@@ -674,7 +685,8 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         args.action === "run" && !existingCall
           ? await preparedContext(api.conversationId, args.includePreviousContext ?? false)
           : [];
-      const isAsync = args.action === "queue" || args.async === true;
+      const isAsync =
+        api.conversationId === state!.mainId || args.action === "queue" || args.async === true;
       const change = modelChange(args.model, args.effort);
       const result = await api.commit(async (tx) => {
         const doc = await tx.doc(OrchestrationDoc);

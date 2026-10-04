@@ -3,11 +3,18 @@ import { computed, ref, watch } from "vue";
 import ChatHeader from "@/client/components/ChatHeader.vue";
 import MessageComposer from "@/client/components/MessageComposer.vue";
 import SessionTranscriptView from "@/client/components/SessionTranscriptView.vue";
-import { listRunningSubagents } from "@/client/lib/api";
+import { getMain, listRunningSubagents } from "@/client/lib/api";
+import { applySessionResponse } from "@/client/lib/session-events";
 import { resolveThinkingOptions } from "@/client/lib/thinking-levels";
 import { promptSubmissionId, retainPromptRetry, clearPromptRetry } from "@/client/lib/prompt-retry";
 import { useAppStore } from "@/client/stores/app";
-import type { QueuedPrompt, UiMessage } from "@/shared/types";
+import {
+  optimisticTranscriptMessages,
+  reconcileOptimisticMessages,
+  type OptimisticUserMessage,
+  type PendingOptimisticMessage,
+} from "@/client/lib/optimistic-messages";
+import type { QueuedPrompt } from "@/shared/types";
 
 const MODEL_POPOVER_ID = "chat-main-model-popover";
 const MODEL_POPOVER_ANCHOR = "--chat-main-model-anchor";
@@ -24,16 +31,17 @@ const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSessio
 const pendingIdlePromptSessionIds = new Set<string>();
 let promptRequestId = 0;
 let optimisticMessageId = 0;
-type OptimisticUserMessage = Extract<UiMessage, { role: "user" }>;
-type PendingOptimisticMessage = {
-  message: OptimisticUserMessage;
-  clientMessageId: string;
-};
+// In-flight submissions belong to this page only: interrupted uploads cannot
+// be resumed from filenames. Accepted queue entries are rendered from SSE.
+localStorage.removeItem("batty:optimistic-messages");
 const optimisticMessagesBySessionId = ref<Record<string, PendingOptimisticMessage[]>>({});
 const activeOptimisticMessages = computed(() => {
-  const sessionId = store.activeSession?.sessionId;
-  return sessionId
-    ? (optimisticMessagesBySessionId.value[sessionId] ?? []).map((item) => item.message)
+  const session = store.activeSession;
+  return session
+    ? optimisticTranscriptMessages(
+        optimisticMessagesBySessionId.value[session.sessionId] ?? [],
+        session,
+      )
     : [];
 });
 const isUnavailable = computed(() => store.connectionState === "offline");
@@ -133,6 +141,10 @@ function addOptimisticMessage(
   text: string,
   files: File[],
 ): string {
+  const existing = optimisticMessagesBySessionId.value[sessionId]?.find(
+    (item) => item.clientMessageId === clientMessageId,
+  );
+  if (existing) return existing.message.id;
   const submittedText = text.trim();
   const submittedFileNames = files.map((file) => file.name);
   const attachmentLabel =
@@ -176,17 +188,7 @@ function reconcileOptimisticMessage(): void {
   }
 
   const pending = optimisticMessagesBySessionId.value[session.sessionId] ?? [];
-  const userMessages = session.messages.filter(
-    (message): message is OptimisticUserMessage => message.role === "user",
-  );
-  const authoritativeClientMessageIds = new Set(
-    [...userMessages, ...(session.queuedPrompts ?? [])].flatMap((message) =>
-      message.clientMessageId ? [message.clientMessageId] : [],
-    ),
-  );
-  const remaining = pending.filter(
-    (candidate) => !authoritativeClientMessageIds.has(candidate.clientMessageId),
-  );
+  const remaining = reconcileOptimisticMessages(pending, session);
   if (remaining.length === pending.length) {
     return;
   }
@@ -210,6 +212,35 @@ function wasPromptAccepted(sessionId: string, clientMessageId: string): boolean 
   );
 }
 
+async function reconcileQueuedReceipt(sessionId: string, optimisticId: string): Promise<void> {
+  // A tab can miss acceptance followed by remote cancellation. A queued
+  // receipt lets a fresh authoritative snapshot resolve that entire lifecycle.
+  if (
+    !(optimisticMessagesBySessionId.value[sessionId] ?? []).some(
+      (item) => item.message.id === optimisticId,
+    )
+  )
+    return;
+  const requestedStreamId = store.activeSession?.streamId;
+  try {
+    const snapshot = await getMain();
+    if (store.activeSession?.sessionId !== sessionId) return;
+    const previous = store.activeSession;
+    const updated = applySessionResponse(previous, snapshot, requestedStreamId);
+    if (updated === previous) return;
+    store.activeSession = updated;
+    const item = (optimisticMessagesBySessionId.value[sessionId] ?? []).find(
+      (candidate) => candidate.message.id === optimisticId,
+    );
+    if (item && !wasPromptAccepted(sessionId, item.clientMessageId)) {
+      removeOptimisticMessage(sessionId, optimisticId);
+    }
+  } catch (error) {
+    // Submission succeeded; snapshot failure must not restore its draft.
+    promptError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
 async function sendPrompt(text: string, files: File[]): Promise<void> {
   const sessionId = store.activeSession?.sessionId;
   const gateSessionId = store.activeSession?.isStreaming
@@ -224,22 +255,22 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
   const clientMessageId = promptSubmissionId(sessionId!, "prompt", text, files);
   composer.value?.clear();
   const optimisticId =
-    gateSessionId && !text.trimStart().startsWith("/")
-      ? addOptimisticMessage(gateSessionId, clientMessageId, text, files)
+    sessionId && !text.trimStart().startsWith("/")
+      ? addOptimisticMessage(sessionId, clientMessageId, text, files)
       : undefined;
   if (gateSessionId) {
     pendingIdlePromptSessionIds.add(gateSessionId);
   }
   try {
-    await store.sendPrompt(text, files, clientMessageId);
+    const receipt = await store.sendPrompt(text, files, clientMessageId);
+    // A started receipt can precede SSE publishing the transcript message.
     clearPromptRetry(sessionId!, clientMessageId);
-    if (gateSessionId && optimisticId) {
-      removeOptimisticMessage(gateSessionId, optimisticId);
+    if (receipt.disposition === "queued" && sessionId && optimisticId) {
+      await reconcileQueuedReceipt(sessionId, optimisticId);
     }
   } catch (error) {
     if (sessionId && wasPromptAccepted(sessionId, clientMessageId)) {
       clearPromptRetry(sessionId, clientMessageId);
-      if (optimisticId) removeOptimisticMessage(sessionId, optimisticId);
       return;
     }
     if (sessionId) {
@@ -261,6 +292,7 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
 watch(
   [() => store.activeSession?.messages, () => store.activeSession?.queuedPrompts],
   reconcileOptimisticMessage,
+  { immediate: true, flush: "sync" },
 );
 watch(
   () => store.activeSession?.sessionId,
@@ -296,18 +328,26 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
   promptError.value = undefined;
   const clientMessageId = promptSubmissionId(sessionId!, "steer", text, files);
   composer.value?.clear();
+  const optimisticId =
+    sessionId && !text.trimStart().startsWith("/")
+      ? addOptimisticMessage(sessionId, clientMessageId, text, files)
+      : undefined;
   if (gateSessionId) {
     pendingIdlePromptSessionIds.add(gateSessionId);
   }
   try {
-    await store.steerPrompt(text, files, clientMessageId);
+    const receipt = await store.steerPrompt(text, files, clientMessageId);
     clearPromptRetry(sessionId!, clientMessageId);
+    if (receipt.disposition === "queued" && sessionId && optimisticId) {
+      await reconcileQueuedReceipt(sessionId, optimisticId);
+    }
   } catch (error) {
     if (sessionId && wasPromptAccepted(sessionId, clientMessageId)) {
       clearPromptRetry(sessionId, clientMessageId);
       return;
     }
     if (sessionId) {
+      if (optimisticId) removeOptimisticMessage(sessionId, optimisticId);
       retainPromptRetry(sessionId, "steer", text, files, clientMessageId);
       composer.value?.restore(sessionId, text, files);
     }

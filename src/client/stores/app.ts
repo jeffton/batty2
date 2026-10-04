@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { primeAgentNotifications } from "@/client/lib/agent-notifications";
+import { syncPushSubscription, unregisterPushSubscription } from "@/client/lib/push-notifications";
 import { withBaseUrl } from "@/client/lib/base-url";
 import { applyAppAppearance } from "@/client/lib/appearance";
 import * as api from "@/client/lib/api";
@@ -26,6 +28,9 @@ export const useAppStore = defineStore("app", {
           this.workspaces = await api.listWorkspaces();
           this.activeSession = mergeSessionState(await api.getMain(), this.activeSession);
           this.openStream();
+          void syncPushSubscription(false).catch((error) => {
+            this.lastError = error instanceof Error ? error.message : String(error);
+          });
         } else {
           this.closeStream();
           this.activeSession = undefined;
@@ -69,6 +74,7 @@ export const useAppStore = defineStore("app", {
       source = undefined;
     },
     async logout() {
+      await unregisterPushSubscription();
       await api.logout();
       this.closeStream();
       this.authenticated = false;
@@ -77,10 +83,21 @@ export const useAppStore = defineStore("app", {
     setAuthError(error: unknown) {
       this.authError = error instanceof Error ? error.message : String(error);
     },
+    primeNotifications() {
+      void primeAgentNotifications()
+        .then((granted) => {
+          if (granted) return syncPushSubscription(false);
+        })
+        .catch((error) => {
+          this.lastError = error instanceof Error ? error.message : String(error);
+        });
+    },
     async sendPrompt(text: string, files: File[], clientMessageId: string) {
+      this.primeNotifications();
       return api.submitMainPrompt("prompt", text, files, clientMessageId);
     },
     async steerPrompt(text: string, files: File[], clientMessageId: string) {
+      this.primeNotifications();
       return api.submitMainPrompt("steer", text, files, clientMessageId);
     },
     async stopActiveSession() {

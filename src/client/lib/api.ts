@@ -50,6 +50,26 @@ export function setSitePublic(siteId: string, isPublic: boolean): Promise<SiteDe
   });
 }
 
+export function getPushPublicKey(): Promise<{ publicKey: string }> {
+  return request("/api/push/public-key");
+}
+
+export function savePushSubscription(subscription: PushSubscriptionJSON): Promise<{ ok: true }> {
+  return request("/api/push/subscriptions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription }),
+  });
+}
+
+export function deletePushSubscription(endpoint: string): Promise<{ ok: true }> {
+  return request("/api/push/subscriptions/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
+}
+
 export function getBootstrap(): Promise<BootstrapPayload> {
   return request("/api/bootstrap");
 }

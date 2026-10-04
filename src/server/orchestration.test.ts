@@ -10,7 +10,14 @@ import {
   fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
+import {
+  createRegistry,
+  defineExtension,
+  defineTask,
+  defineTool,
+  Harness,
+  LiveDoc,
+} from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type, getCurrentTools } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -464,6 +471,362 @@ test("workers spawned by a worker still deliver async replies to canonical main"
     (await (await harness.conversation(outer.id, context))!.context(context)).messages,
   );
   expect(outerHistory).not.toContain("leaf answer");
+}, 15000);
+
+test.each(["complete", "restart"])(
+  "worker await preserves its submission and target across %s",
+  async (mode) => {
+    const { faux, orchestration, open, registry } = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    registry.install(
+      defineExtension({
+        name: "nested-await-test",
+        tools: [
+          defineTool({
+            name: "review_gate",
+            description: "hold review open",
+            parameters: Type.Object({}),
+            replay: "safe",
+            execute: async (_, __, ctx) => {
+              await new Promise<void>((resolve, reject) => {
+                const abort = () => reject(ctx.abortSignal!.reason);
+                ctx.abortSignal!.addEventListener("abort", abort, { once: true });
+                void gate.then(() => {
+                  ctx.abortSignal!.removeEventListener("abort", abort);
+                  resolve();
+                });
+              });
+              return { content: [{ type: "text", text: "review ready" }] };
+            },
+          }),
+        ],
+      }),
+    );
+    let { harness, main } = await open();
+    const successor = defineTask<null, { phase: "done" }, string>({
+      name: "test.await-successor",
+      version: 1,
+      abort: async (_, runtime, ctx) => {
+        await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx);
+      },
+      initial: () => ({ phase: "done" }),
+      phases: {
+        done: async (_, runtime, ctx) => {
+          await runtime.commit(
+            () => ({
+              status: "terminal",
+              outcome: { status: "completed", result: "unrelated successor result" },
+            }),
+            ctx,
+          );
+        },
+      },
+    });
+    registry.install(defineExtension({ name: "await-successor-test", tasks: [successor] }));
+    const call = (args: { action: string; async?: boolean; prompt?: string; sessionId?: string }) =>
+      fauxAssistantMessage([fauxToolCall("subagent", args)], { stopReason: "toolUse" });
+    faux.setResponses(
+      Array.from({ length: 30 }, () => (request) => {
+        const last = request.messages.findLast((m) => m.role !== "system")!;
+        const text = JSON.stringify(last.content);
+        if (last.role === "user" && text.includes("launch await test"))
+          return call({ action: "run", async: true, prompt: "outer implementation" });
+        if (last.role === "user" && text.includes("outer implementation"))
+          return call({ action: "run", async: true, prompt: "nested review" });
+        if (last.role === "user" && text.includes("nested review"))
+          return fauxAssistantMessage([fauxToolCall("review_gate", {})], { stopReason: "toolUse" });
+        if (last.role === "toolResult" && text.includes("Started. Session ID:")) {
+          const sessionId = text.match(/Session ID: (\d+)/)![1];
+          return call({ action: "await", sessionId });
+        }
+        if (last.role === "toolResult" && last.toolName === "review_gate")
+          return fauxAssistantMessage([fauxText("review findings")]);
+        if (last.role === "toolResult" && text.includes("review findings"))
+          return fauxAssistantMessage([fauxText("implementation final report after review")]);
+        return fauxAssistantMessage([fauxText("noted")]);
+      }),
+    );
+    try {
+      const submission = await main.submit(
+        { type: "input", content: "launch await test" },
+        context,
+      );
+      // Main await still yields, even though the nested review remains blocked.
+      await submission.wait(context);
+      await until(async () => {
+        const state = (await harness.snapshot(OrchestrationDoc, context))!;
+        const outer = Object.values(state.workers).find((w) => w.parentId === main.id);
+        if (!outer) return false;
+        const live = await harness.snapshot(LiveDoc, outer.id, context);
+        for (const slot of live?.tools ?? []) {
+          if (
+            slot.taskId &&
+            (await harness.getTask(slot.taskId, context))?.memos?.["batty.await"] !== undefined
+          )
+            return true;
+        }
+        return false;
+      });
+      if (mode === "restart") {
+        // Queue/resume replaces active with a later delivery. Recovery must keep
+        // the target recorded by the already-running await, not follow this tail.
+        await main.commit(async (tx) => {
+          const state = await tx.doc(OrchestrationDoc);
+          const inner = Object.values(state.workers).find((w) => w.parentId !== main.id)!;
+          inner.active = await tx.createTask(successor, null, {
+            ownership: { kind: "conversation" },
+            background: true,
+          });
+        }, context);
+        await harness.close(context);
+        ({ harness, main } = await open());
+        harness.resume();
+      }
+    } finally {
+      release();
+    }
+    await until(async () => (await orchestration.listRunning()).length === 0);
+    await main.waitForIdle(context);
+    const state = (await harness.snapshot(OrchestrationDoc, context))!;
+    const outer = Object.values(state.workers).find((w) => w.parentId === main.id)!;
+    const history = JSON.stringify((await main.context(context)).messages);
+    expect(history).toContain(
+      `[subagent ${outer.id} result]\\nimplementation final report after review`,
+    );
+    expect(history).toContain("review findings");
+    expect(history).not.toContain("(no output)");
+    const outerMessages = (await (await harness.conversation(outer.id, context))!.context(context))
+      .messages;
+    expect(outerMessages.findLast((m) => m.role === "assistant")).toMatchObject({
+      content: [{ type: "text", text: "implementation final report after review" }],
+    });
+  },
+  15000,
+);
+
+test.each([undefined, false])(
+  "main run/resume is async with async=%s and idle results start a turn",
+  async (asyncOption) => {
+    const { faux, orchestration, open, registry } = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    registry.install(
+      defineExtension({
+        name: "main-async-test",
+        tools: [
+          defineTool({
+            name: "hold_worker",
+            description: "hold worker",
+            parameters: Type.Object({}),
+            replay: "safe",
+            execute: async () => {
+              await gate;
+              return { content: [{ type: "text", text: "released" }] };
+            },
+          }),
+        ],
+      }),
+    );
+    const { harness, main } = await open();
+    let workerId: string | undefined;
+    faux.setResponses(
+      Array.from({ length: 40 }, () => (request) => {
+        const last = request.messages.findLast((m) => m.role !== "system")!;
+        const text = JSON.stringify(last.content);
+        if (
+          last.role === "user" &&
+          (text.includes("launch async test") || text.includes("resume async test"))
+        )
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("subagent", {
+                action: text.includes("resume async test") ? "resume" : "run",
+                ...(workerId ? { sessionId: workerId } : {}),
+                ...(asyncOption === undefined ? {} : { async: asyncOption }),
+                prompt: "held implementation",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "user" && text.includes("held implementation"))
+          return fauxAssistantMessage([fauxToolCall("hold_worker", {})], { stopReason: "toolUse" });
+        if (last.role === "toolResult" && last.toolName === "hold_worker")
+          return fauxAssistantMessage([fauxText("held worker final")]);
+        return fauxAssistantMessage([fauxText("main available")]);
+      }),
+    );
+    try {
+      await (
+        await main.submit({ type: "input", content: "launch async test" }, context)
+      ).wait(context);
+      const state = (await harness.snapshot(OrchestrationDoc, context))!;
+      workerId = String(Object.values(state.workers)[0]!.id);
+      expect(await orchestration.listRunning()).toHaveLength(1);
+      const result = (await main.context(context)).messages.find(
+        (m) => m.role === "toolResult" && m.toolName === "subagent",
+      );
+      expect(result).toMatchObject({
+        details: { subagent: { async: true, respondIn: "session" } },
+      });
+    } finally {
+      release();
+    }
+    await until(async () => (await orchestration.listRunning()).length === 0);
+    await main.waitForIdle(context);
+    let history = (await main.context(context)).messages;
+    expect(
+      history.some(
+        (m) => m.role === "user" && JSON.stringify(m.content).includes("held worker final"),
+      ),
+    ).toBe(true);
+    expect(history.at(-1)).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "main available" }],
+    });
+    await (
+      await main.submit({ type: "input", content: "resume async test" }, context)
+    ).wait(context);
+    await until(async () => (await orchestration.listRunning()).length === 0);
+    await main.waitForIdle(context);
+    history = (await main.context(context)).messages;
+    const starts = history.filter((m) => m.role === "toolResult" && m.toolName === "subagent");
+    expect(starts).toHaveLength(2);
+    for (const start of starts)
+      expect(start).toMatchObject({
+        content: [{ type: "text", text: `Started. Session ID: ${workerId}` }],
+        details: { subagent: { async: true } },
+      });
+  },
+  15000,
+);
+
+test("async reports steer a busy main before its final reply", async () => {
+  const { faux, orchestration, open, registry } = await fixture();
+  let releaseMain!: () => void;
+  let releaseWorker!: () => void;
+  let mainHeld = false;
+  const mainGate = new Promise<void>((resolve) => {
+    releaseMain = resolve;
+  });
+  const workerGate = new Promise<void>((resolve) => {
+    releaseWorker = resolve;
+  });
+  registry.install(
+    defineExtension({
+      name: "report-steer-test",
+      tools: [
+        defineTool({
+          name: "hold",
+          description: "hold",
+          parameters: Type.Object({ main: Type.Boolean() }),
+          replay: "safe",
+          execute: async (args) => {
+            if (args.main) {
+              mainHeld = true;
+              await mainGate;
+            } else await workerGate;
+            return { content: [{ type: "text", text: "released" }] };
+          },
+        }),
+      ],
+    }),
+  );
+  const { harness, main } = await open();
+  let reacted = false;
+  faux.setResponses(
+    Array.from({ length: 30 }, () => (request) => {
+      const last = request.messages.findLast((m) => m.role !== "system")!;
+      const text = JSON.stringify(last.content);
+      if (last.role === "user" && text.includes("launch steering test"))
+        return fauxAssistantMessage(
+          [fauxToolCall("subagent", { action: "run", prompt: "steering worker" })],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("steering worker"))
+        return fauxAssistantMessage([fauxToolCall("hold", { main: false })], {
+          stopReason: "toolUse",
+        });
+      if (last.role === "toolResult" && last.toolName === "subagent")
+        return fauxAssistantMessage([fauxToolCall("hold", { main: true })], {
+          stopReason: "toolUse",
+        });
+      if (last.role === "user" && text.includes("worker steering result")) {
+        reacted = true;
+        return fauxAssistantMessage([fauxText("main reacted before final")]);
+      }
+      if (last.role === "toolResult" && last.toolName === "hold") {
+        const wasMain = request.messages.some(
+          (m) => m.role === "user" && JSON.stringify(m.content).includes("launch steering test"),
+        );
+        return fauxAssistantMessage([
+          fauxText(wasMain ? "main missed steering" : "worker steering result"),
+        ]);
+      }
+      return fauxAssistantMessage([fauxText("noted")]);
+    }),
+  );
+  const submission = await main.submit({ type: "input", content: "launch steering test" }, context);
+  try {
+    await until(async () => mainHeld);
+    releaseWorker();
+    await until(async () => (await orchestration.listRunning()).length === 0);
+  } finally {
+    releaseWorker();
+    releaseMain();
+  }
+  await submission.wait(context);
+  await main.waitForIdle(context);
+  expect(reacted).toBe(true);
+  const history = (await main.context(context)).messages;
+  expect(JSON.stringify(history)).not.toContain("main missed steering");
+  expect(history.findLast((m) => m.role === "assistant")).toMatchObject({
+    content: [{ type: "text", text: "main reacted before final" }],
+  });
+  expect(Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)).toHaveLength(
+    1,
+  );
+}, 15000);
+
+test("worker-started synchronous delegation still returns the result in its tool call", async () => {
+  const { faux, orchestration, open } = await fixture();
+  const { harness, main } = await open();
+  faux.setResponses(
+    Array.from({ length: 25 }, () => (request) => {
+      const last = request.messages.findLast((m) => m.role !== "system")!;
+      const text = JSON.stringify(last.content);
+      if (last.role === "user" && text.includes("launch sync preservation"))
+        return fauxAssistantMessage(
+          [fauxToolCall("subagent", { action: "run", prompt: "outer sync worker" })],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("outer sync worker"))
+        return fauxAssistantMessage(
+          [fauxToolCall("subagent", { action: "run", async: false, prompt: "inner sync worker" })],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("inner sync worker"))
+        return fauxAssistantMessage([fauxText("nested synchronous answer")]);
+      return fauxAssistantMessage([fauxText("outer completed")]);
+    }),
+  );
+  await (
+    await main.submit({ type: "input", content: "launch sync preservation" }, context)
+  ).wait(context);
+  await until(async () => (await orchestration.listRunning()).length === 0);
+  const outer = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers).find(
+    (w) => w.parentId === main.id,
+  )!;
+  const messages = (await (await harness.conversation(outer.id, context))!.context(context))
+    .messages;
+  expect(messages.find((m) => m.role === "toolResult" && m.toolName === "subagent")).toMatchObject({
+    content: [{ type: "text", text: "nested synchronous answer" }],
+    details: { subagent: { async: false, respondIn: "tool-call" } },
+  });
 }, 15000);
 
 test("queue admits the current report before delivering the queued prompt", async () => {

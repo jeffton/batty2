@@ -13,6 +13,12 @@ One permanent assistant chat. Workspaces are execution scopes for subagents and 
 
 State lives in `/var/lib/batty2/.batty`; source lives in `/root/github/batty2`. Existing Batty uses separate state and remains independent. Provider OAuth credentials share the SDK's locked credential store through `BATTY_PROVIDER_AUTH_PATH`; passkeys and application secrets are isolated. Original history and reasoning are retained; reasoning is excluded from memory compression.
 
+Outgoing prompts appear immediately, including attachment names, and survive page refresh until the server publishes the matching user message. Failed submissions restore the draft; cancelled queued prompts remove their outgoing entry.
+
+## Notifications
+
+Web push uses the installed PWA's service worker. Sending a message requests browser permission; authenticated startup resynchronizes granted subscriptions without prompting. Main-thread assistant replies notify even with the app closed; tool handoffs, worker replies and `NO_REPLY` do not. Notification clicks open the permanent chat. VAPID keys and subscriptions live in `.batty/web-push`; `webPushSubject` retains the configured VAPID subject.
+
 ## Develop
 
 ```sh
