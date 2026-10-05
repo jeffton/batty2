@@ -580,6 +580,9 @@ function handlePopoverToggle(event: Event): void {
       </section>
 
       <section class="settings-popover__section">
+        <RouterLink to="/memory-tree" class="memory-tree-link" @click="closePopover">
+          Memory tree
+        </RouterLink>
         <div class="settings-popover__group-title">Memory model</div>
         <div class="settings-popover__help">Used to build OptChat memory summaries.</div>
         <ModelConfigSelector
@@ -892,6 +895,13 @@ function handlePopoverToggle(event: Event): void {
 </template>
 
 <style scoped>
+.memory-tree-link {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 8px;
+}
+
 .settings-popover {
   background: var(--color-bg-panel-strong);
 }

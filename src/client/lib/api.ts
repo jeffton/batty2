@@ -26,6 +26,16 @@ import type {
   WorkspaceInfo,
 } from "@/shared/types";
 
+import type { MemoryTreeOverview, MemoryTreeExpansion } from "@/shared/memory-tree";
+
+export function getMemoryTree(): Promise<MemoryTreeOverview> {
+  return request("/api/memory/tree");
+}
+
+export function expandMemoryNode(id: number, count: number): Promise<MemoryTreeExpansion> {
+  return request(`/api/memory/tree/${id}/${count}`);
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(withBaseUrl(input), {
     credentials: "include",

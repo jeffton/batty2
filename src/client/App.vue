@@ -31,7 +31,9 @@ onUnmounted(() => {
 watch(
   () => [store.bootstrapped, store.authenticated],
   () => {
-    if (store.bootstrapped) void router.replace(store.authenticated ? "/" : "/login");
+    if (!store.bootstrapped) return;
+    if (!store.authenticated) void router.replace("/login");
+    else if (router.currentRoute.value.path === "/login") void router.replace("/");
   },
 );
 </script>

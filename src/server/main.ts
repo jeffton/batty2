@@ -24,6 +24,7 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerCronRoutes } from "./routes/cron";
 import { registerSiteRoutes } from "./routes/sites";
 import { registerMcpRoutes } from "./routes/mcp";
+import { registerMemoryTreeRoutes } from "./routes/memory-tree";
 import { Runtime, context } from "./runtime";
 import { acquireLock } from "./lock";
 import { retainInput } from "./input-receipts";
@@ -92,6 +93,7 @@ registerAuthRoutes(routeContext);
 registerCronRoutes(app, runtime.orchestration);
 registerSiteRoutes(routeContext);
 registerMcpRoutes({ ...routeContext, mcp: runtime.tools.mcp });
+registerMemoryTreeRoutes(app, runtime.memory);
 app.get("/api/push/public-key", async () => ({ publicKey: webPush.getPublicKey() }));
 app.post<{ Body: { subscription: PushSubscriptionJSON } }>(
   "/api/push/subscriptions",

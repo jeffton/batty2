@@ -566,6 +566,17 @@ export function createMemory(config: MemoryConfig, models: Models) {
       .map((part) => `${key(part)}|${nodes.get(key(part))!}`)
       .join("\n");
   }
+  function browserSummary(part: Part) {
+    const summary = nodes.get(key(part)) ?? "(not summarized yet: zoom it)";
+    return {
+      id: part.start,
+      count: part.count,
+      summary,
+      bytes: utf8Bytes(summary),
+      startDate: leaves.get(part.start)!.date,
+      endDate: leaves.get(part.start + part.count - 1)!.date,
+    };
+  }
   async function date(id: number, context = BACKGROUND_CONTEXT) {
     await load(context);
     const leaf = leaves.get(id);
@@ -760,6 +771,32 @@ export function createMemory(config: MemoryConfig, models: Models) {
         context,
       );
       return [{ role: "user", content: view, timestamp: 0 }];
+    },
+    browserOverview() {
+      return {
+        nodes: index.parts.map(browserSummary),
+        prepared: index.viewCount,
+        total: index.count,
+      };
+    },
+    async browserNode(id: number, count: number) {
+      if (
+        !Number.isSafeInteger(id) ||
+        !Number.isSafeInteger(count) ||
+        count < 1 ||
+        Math.log2(count) % 1 !== 0 ||
+        id < 0 ||
+        id % count !== 0 ||
+        id + count > index.viewCount
+      )
+        throw new RangeError(`No prepared line ${id}+${count}`);
+      if (count === 1) return { children: [], text: await zoom(id, count) };
+      return {
+        children: [
+          browserSummary({ start: id, count: count / 2 }),
+          browserSummary({ start: id + count / 2, count: count / 2 }),
+        ],
+      };
     },
     status() {
       const totalLeaves = index?.count ?? 0;
