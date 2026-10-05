@@ -10,7 +10,12 @@ export function createResources(config: AppConfig) {
   const agentDir = stateDirPath(config.battyDir);
   function skills(cwd: string, assistantPath?: string) {
     const skillPaths = [path.join(agentDir, "skills"), path.join(cwd, ".batty", "skills")];
-    if (assistantPath) skillPaths.push(path.join(assistantPath, ".batty", "skills"));
+    if (assistantPath) {
+      skillPaths.push(
+        path.join(assistantPath, ".batty", "skills"),
+        path.join(assistantPath, "skills"),
+      );
+    }
     const result = loadSkills({
       cwd,
       agentDir,

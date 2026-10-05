@@ -17,8 +17,10 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function skill(workspace: string, name: string, description = name) {
-  const folder = path.join(workspace, ".batty", "skills", name);
+async function skill(workspace: string, name: string, description = name, workspaceLocal = false) {
+  const folder = workspaceLocal
+    ? path.join(workspace, "skills", name)
+    : path.join(workspace, ".batty", "skills", name);
   await mkdir(folder, { recursive: true });
   const filePath = path.join(folder, "SKILL.md");
   await writeFile(
@@ -44,7 +46,7 @@ test("popover skills include global, execution and configured assistant workspac
   const assistant = path.join(root, "assistant");
   const other = path.join(root, "other");
   const currentFile = await skill(current, "project-skill");
-  const assistantFile = await skill(assistant, "assistant-skill");
+  const assistantFile = await skill(assistant, "assistant-skill", "assistant-skill", true);
   const otherFile = await skill(other, "other-skill");
   const config = await setup([root], "assistant");
   const globalFile = await skill(config.battyDir, "global-skill");
@@ -99,6 +101,9 @@ test("duplicate directories, symlinked files and skill names preserve existing s
   const currentFile = await skill(current, "current-wins");
   const sharedFile = await skill(current, "shared");
   await skill(assistant, "current-wins", "assistant collision");
+  await skill(assistant, "current-wins", "workspace-local collision", true);
+  await mkdir(path.join(assistant, "skills", "shared"));
+  await symlink(sharedFile, path.join(assistant, "skills", "shared", "SKILL.md"));
   await symlink(path.dirname(sharedFile), path.join(assistant, ".batty", "skills", "shared-link"));
   const config = await setup([root], "assistant");
   const globalFile = await skill(config.battyDir, "global-wins");
@@ -115,5 +120,14 @@ test("duplicate directories, symlinked files and skill names preserve existing s
   expect((await resources.sessionSkills(current)).map((entry) => entry.filePath).sort()).toEqual(
     loaded.map((entry) => entry.filePath).sort(),
   );
-  expect(console.warn).toHaveBeenCalledTimes(1); // Only the real global/current name collision.
+  expect(console.warn).toHaveBeenCalledWith(
+    "Skill diagnostic",
+    expect.objectContaining({
+      type: "collision",
+      collision: expect.objectContaining({ name: "global-wins" }),
+    }),
+  );
+  expect(
+    vi.mocked(console.warn).mock.calls.filter(([, diagnostic]) => diagnostic.type === "collision"),
+  ).toHaveLength(1);
 });
