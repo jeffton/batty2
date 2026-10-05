@@ -31,15 +31,26 @@ interface TranscriptSection {
   endIndex: number;
 }
 
-function startsAnyTurn(entry: TranscriptMessageView): boolean {
-  return entry.message.role === "user" || entry.message.role === "custom";
-}
-
-function transcriptSections(entries: TranscriptMessageView[]): TranscriptSection[] {
+function transcriptSections(
+  entries: TranscriptMessageView[],
+  toolStatesByCallId: Map<string, ToolDisplayState>,
+): TranscriptSection[] {
   const starts: number[] = [];
+  let hasReply = false;
   entries.forEach((entry, index) => {
-    if (index === 0 || startsAnyTurn(entry)) {
+    // Runtime inputs can arrive between a tool call and its final reply. They
+    // continue that work, rather than stranding it in a reply-less section that
+    // must stay expanded. After a reply, a notice starts independent work.
+    if (
+      index === 0 ||
+      entry.message.role === "user" ||
+      (entry.message.role === "custom" && hasReply)
+    ) {
       starts.push(index);
+      hasReply = false;
+    }
+    if (hasAssistantReply(collapsedMessage(entry, toolStatesByCallId))) {
+      hasReply = true;
     }
   });
 
@@ -148,7 +159,7 @@ export function buildTranscriptDisplayEntries(
     };
   }
 
-  const sections = transcriptSections(entries);
+  const sections = transcriptSections(entries, toolStatesByCallId);
   const latestSectionKey = options.isStreaming ? sections.at(-1)?.key : undefined;
   const displayEntries: TranscriptDisplayEntry[] = [];
 

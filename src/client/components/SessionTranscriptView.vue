@@ -151,7 +151,6 @@ const transcriptDisplay = computed(() =>
     },
   ),
 );
-const latestExpandedSectionKey = computed(() => transcriptDisplay.value.latestExpandedSectionKey);
 const transcriptEntries = computed<TranscriptDisplayEntry[]>(() =>
   addTimestampVisibility(transcriptDisplay.value.entries),
 );
@@ -639,12 +638,12 @@ watch(transcriptPane, () => {
   updateTranscriptPinnedState();
 });
 
+// Automatic expansion is derived from streaming state, never stored as a
+// user choice. Preserve explicit expansion across runtime inputs/completion.
 watch(
-  [() => props.session?.id, latestExpandedSectionKey],
-  ([sessionId, sectionKey], [previousSessionId, previousSectionKey]) => {
-    if (sessionId !== previousSessionId || sectionKey !== previousSectionKey) {
-      openDetailsSectionKey.value = null;
-    }
+  () => props.session?.id,
+  () => {
+    openDetailsSectionKey.value = null;
   },
 );
 

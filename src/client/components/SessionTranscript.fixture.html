@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <div id="app" style="height: 700px; display: flex"></div>
+    <script type="module">
+      import { createApp, h, ref } from "vue";
+      import { createPinia } from "pinia";
+      import SessionTranscriptView from "./SessionTranscriptView.vue";
+      import "../styles.css";
+
+      const user = {
+        id: "u",
+        role: "user",
+        timestamp: 1,
+        blocks: [{ type: "text", text: "Fix spacing" }],
+      };
+      const work = {
+        id: "work",
+        role: "assistant",
+        timestamp: 2,
+        turnPhase: "intermediate",
+        blocks: [{ type: "thinking", thinking: "Header spacing task details" }],
+      };
+      const notice = {
+        id: "notice",
+        role: "custom",
+        timestamp: 3,
+        customType: "batty-runtime-notice:subagent",
+        text: "Other worker result",
+      };
+      const reply = {
+        id: "reply",
+        role: "assistant",
+        timestamp: 4,
+        turnPhase: "final",
+        blocks: [{ type: "text", text: "Codemode live; spacing still running" }],
+      };
+      const result = { ...notice, id: "result", text: "Spacing worker completed" };
+      const final = {
+        ...reply,
+        id: "final",
+        timestamp: 6,
+        blocks: [{ type: "text", text: "Spacing live" }],
+      };
+      const session = ref({
+        id: "main",
+        sessionId: "1",
+        messages: [user, work, notice],
+        activeTools: [],
+        isStreaming: true,
+      });
+      const always = ref(false);
+      document.addEventListener("fixture-state", ({ detail }) => {
+        if (detail === "reply")
+          session.value = {
+            ...session.value,
+            messages: [user, work, notice, reply],
+            isStreaming: false,
+          };
+        if (detail === "delivery")
+          session.value = {
+            ...session.value,
+            messages: [user, work, notice, reply, result],
+            isStreaming: true,
+          };
+        if (detail === "finished")
+          session.value = {
+            ...session.value,
+            messages: [user, work, notice, reply, result, final],
+            isStreaming: false,
+          };
+        if (detail === "switch") session.value = { ...session.value, id: "other", sessionId: "2" };
+        if (detail === "always") always.value = true;
+      });
+      createApp({
+        setup: () => () =>
+          h(SessionTranscriptView, {
+            session: session.value,
+            loadOlderMessages: async () => {},
+            alwaysShowDetails: always.value,
+          }),
+      })
+        .use(createPinia())
+        .mount("#app");
+    </script>
+  </body>
+</html>
