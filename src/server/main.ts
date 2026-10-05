@@ -373,7 +373,6 @@ for (const url of ["/api/main/prompt", "/api/main/steer"]) {
       files,
       config.baseUrl,
     );
-    await runtime.tools.syncConversation(runtime.main, context);
     const wasBusy = (await runtime.state("main", undefined, false)).isStreaming;
     const content: UserMessage["content"] = [
       { type: "text", text: [text, attachments.text].filter(Boolean).join("\n\n") },

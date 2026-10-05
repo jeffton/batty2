@@ -7,7 +7,7 @@ The authenticated root route contains one main chat. Workspace listings never se
 - `GET /api/bootstrap`: existing `BootstrapPayload` auth/provider/settings/models fields. The client does not consume workspace snapshots or daily-session data.
 - `GET /api/workspaces`: `{ workspaces: WorkspaceInfo[] }`.
 - `GET /api/main`: `SessionState`, full latest message window.
-- `GET /api/memory/status`: `{ pending, totalLeaves, builtLeaves, error? }`; polled while main state reports `isCompacting`. Pending work displays “Preparing memory”; prompt submission remains enabled.
+- Main `SessionState.memoryPreparation` carries `{ pending, totalLeaves, builtLeaves, error? }` in initial snapshots and SSE updates. Pending work displays “Preparing memory”; errors remain visible and prompt submission remains enabled. `isCompacting` describes workers’ native compaction only. `GET /api/memory/status` exposes the same OptChat status for diagnostics.
 - `GET /api/main/messages?before=<durable entry id>&limit=50`: `SessionMessagesPage`.
 - `GET /api/main/events`: SSE JSON `ServerEvent`. Full reset snapshots merge overlapping messages while preserving paginated history. Durable entry IDs need not be numeric.
 - `POST /api/main/prompt` and `POST /api/main/steer`: multipart `text`, `clientMessageId`, repeated `files`; return `{ disposition: 'started' | 'queued', submissionId, sessionId }`. Optimistic messages are removed after HTTP acceptance. On uncertain delivery, the restored draft retains its original `clientMessageId` for a deduplicated retry. State/queued `clientMessageId` mappings can confirm acceptance when an HTTP response is lost.
@@ -30,4 +30,4 @@ Tool details `subagent.sessionId`, nested codemode `calls[].subagent.sessionId`,
 
 ## Existing settings/auth APIs
 
-Existing shapes are consumed for models, provider usage, passkey auth, logout, provider auth, appearance/default model, Brave Search, environment variables, AGENTS.md, MCP settings/auth/workspace status, and site visibility. Exact routes and request bodies are in `lib/api.ts`. The MCP panel defaults to global settings; it does not choose the main session's workspace.
+Existing shapes are consumed for models, provider usage, passkey auth, logout, provider auth, appearance/default model, Brave Search, environment variables, AGENTS.md, MCP settings/auth/status, and site visibility. Exact routes and request bodies are in `lib/api.ts`. MCP settings and connections are global, shared by all workspaces.

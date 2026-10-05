@@ -1,26 +1,14 @@
 <script setup lang="ts">
 import { Save, X } from "@lucide/vue";
 
-const props = defineProps<{ editing: boolean; saving: boolean; canSave: boolean }>();
+const props = defineProps<{ editing: boolean; saving: boolean }>();
 const name = defineModel<string>("name", { required: true });
 const config = defineModel<string>("config", { required: true });
-const global = defineModel<boolean>("global", { required: true });
 const emit = defineEmits<{ save: []; cancel: [] }>();
 </script>
 
 <template>
   <form class="mcp-settings__form" @submit.prevent="emit('save')">
-    <label class="mcp-editor__switch">
-      <input
-        v-model="global"
-        type="checkbox"
-        role="switch"
-        aria-label="Global server"
-        :disabled="saving"
-      />
-      <span class="mcp-editor__switch-track" aria-hidden="true" />
-      <span>Global server</span>
-    </label>
     <label v-if="!props.editing" class="mcp-editor__field">
       <span>Name</span>
       <input v-model="name" aria-label="MCP server name" autocomplete="off" :disabled="saving" />
@@ -36,7 +24,7 @@ const emit = defineEmits<{ save: []; cancel: [] }>();
       />
     </label>
     <div class="mcp-editor__actions">
-      <button type="submit" class="mcp-editor__save" :disabled="saving || !canSave">
+      <button type="submit" class="mcp-editor__save" :disabled="saving">
         <Save :size="14" /> {{ saving ? "Saving…" : "Save server" }}
       </button>
       <button type="button" class="mcp-editor__cancel" :disabled="saving" @click="emit('cancel')">
@@ -99,45 +87,6 @@ const emit = defineEmits<{ save: []; cancel: [] }>();
 .mcp-editor__cancel {
   background: var(--color-bg-elevated);
   color: var(--color-text);
-}
-.mcp-editor__switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-.mcp-editor__switch input {
-  position: absolute;
-  opacity: 0;
-}
-.mcp-editor__switch-track {
-  position: relative;
-  width: 2rem;
-  height: 1.1rem;
-  border-radius: 999px;
-  background: var(--color-border-strong);
-}
-.mcp-editor__switch-track::after {
-  content: "";
-  position: absolute;
-  top: 0.15rem;
-  left: 0.15rem;
-  width: 0.8rem;
-  height: 0.8rem;
-  border-radius: 50%;
-  background: var(--color-bg-overlay);
-  transition: transform 120ms ease;
-}
-.mcp-editor__switch input:checked + .mcp-editor__switch-track {
-  background: var(--color-accent);
-}
-.mcp-editor__switch input:checked + .mcp-editor__switch-track::after {
-  transform: translateX(0.9rem);
-}
-.mcp-editor__switch input:focus-visible + .mcp-editor__switch-track {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
 }
 button:disabled,
 input:disabled,

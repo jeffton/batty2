@@ -16,7 +16,7 @@ import type {
   ModelOption,
   McpAuthAttempt,
   McpSettingsResponse,
-  McpWorkspaceStatus,
+  McpStatus,
   ProviderAuthStartResponse,
   ProviderAuthStatus,
   ProviderUsage,
@@ -87,51 +87,39 @@ export function getProviderAuthStatus(): Promise<ProviderAuthStatus> {
   return request("/api/provider-auth/status");
 }
 
-export function getMcpSettings(workspaceId?: string): Promise<McpSettingsResponse> {
-  const query = workspaceId ? `?${new URLSearchParams({ workspaceId })}` : "";
-  return request(`/api/settings/mcp${query}`);
+export function getMcpSettings(): Promise<McpSettingsResponse> {
+  return request("/api/settings/mcp");
 }
 
 export function saveMcpServer(
   name: string,
   config: McpSettingsResponse["servers"][number]["config"],
-  workspaceId?: string,
 ): Promise<McpSettingsResponse> {
   return request(`/api/settings/mcp/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workspaceId, config }),
+    body: JSON.stringify({ config }),
   });
 }
 
-export function removeMcpServer(name: string, workspaceId?: string): Promise<McpSettingsResponse> {
-  const query = workspaceId ? `?${new URLSearchParams({ workspaceId })}` : "";
-  return request(`/api/settings/mcp/${encodeURIComponent(name)}${query}`, { method: "DELETE" });
+export function removeMcpServer(name: string): Promise<McpSettingsResponse> {
+  return request(`/api/settings/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-export function getWorkspaceMcpStatus(workspaceId: string): Promise<McpWorkspaceStatus> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/mcp`);
+export function getMcpStatus(): Promise<McpStatus> {
+  return request("/api/mcp");
 }
 
-export function reconnectMcpServer(workspaceId: string, name: string): Promise<McpWorkspaceStatus> {
-  return request(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/mcp/${encodeURIComponent(name)}/reconnect`,
-    { method: "POST" },
-  );
+export function reconnectMcpServer(name: string): Promise<McpStatus> {
+  return request(`/api/mcp/${encodeURIComponent(name)}/reconnect`, { method: "POST" });
 }
 
-export function logoutMcpServer(workspaceId: string, name: string): Promise<McpWorkspaceStatus> {
-  return request(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/mcp/${encodeURIComponent(name)}/logout`,
-    { method: "POST" },
-  );
+export function logoutMcpServer(name: string): Promise<McpStatus> {
+  return request(`/api/mcp/${encodeURIComponent(name)}/logout`, { method: "POST" });
 }
 
-export function startMcpLogin(workspaceId: string, name: string): Promise<McpAuthAttempt> {
-  return request(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/mcp/${encodeURIComponent(name)}/login`,
-    { method: "POST" },
-  );
+export function startMcpLogin(name: string): Promise<McpAuthAttempt> {
+  return request(`/api/mcp/${encodeURIComponent(name)}/login`, { method: "POST" });
 }
 
 export function getMcpAuthAttempt(attemptId: string): Promise<McpAuthAttempt> {

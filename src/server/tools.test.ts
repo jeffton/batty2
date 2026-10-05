@@ -18,7 +18,7 @@ import {
   fauxToolCall,
   fauxText,
 } from "@earendil-works/pi-ai/providers/faux";
-import { AgentDoc, createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createOrchestration, OrchestrationDoc } from "./orchestration";
@@ -42,7 +42,6 @@ async function fixture(persistent = false) {
   models.setProvider(faux.provider);
   const registry = createRegistry();
   registry.install(tools.extension);
-  tools.bindRegistry(registry);
   const settings = {
     get extensions() {
       return registry
@@ -134,11 +133,11 @@ describe("durable tool bridge", () => {
   });
 
   it("calls stdio MCP tools through codemode and returns structured MCP results", async () => {
-    const { directory, config, tools, api, run } = await fixture();
+    const { directory, config, tools, main, run } = await fixture();
     const server = path.join(directory, "mcp.cjs");
     await fs.writeFile(
       server,
-      `const readline=require('node:readline'); readline.createInterface({input:process.stdin}).on('line', line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'test',version:'1'}};if(m.method==='tools/list')result={tools:[{name:'echo',description:'Echo input',inputSchema:{type:'object',properties:{value:{type:'string'}},required:['value']}}]};if(m.method==='tools/call')result={content:[{type:'text',text:m.params.arguments.value}],structuredContent:{value:m.params.arguments.value}};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')})`,
+      `const readline=require('node:readline'); readline.createInterface({input:process.stdin}).on('line', line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'test',version:'1'}};if(m.method==='tools/list')result={tools:[{name:'echo',description:'Echo input',inputSchema:{type:'object',properties:{value:{type:'string'}},required:['value']}}]};if(m.method==='tools/call')result={content:[{type:'text',text:m.params.arguments.value}],structuredContent:{value:m.params.arguments.value,pid:process.pid,cwd:process.cwd()}};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')})`,
     );
     await fs.mkdir(stateDirPath(config.battyDir), { recursive: true });
     await fs.writeFile(
@@ -151,22 +150,44 @@ describe("durable tool bridge", () => {
     );
     expect(result.isError).toBe(false);
     expect(result.content?.[0]).toEqual({ type: "text", text: "hello" });
+    const inspect = () =>
+      run(
+        'return { catalog: (await searchTools("mcp__")).map(tool => tool.name), result: (await tools.mcp__test__echo({value:"shared"})).structuredContent }',
+      );
+    const first = JSON.parse((await inspect()).content[0].text);
+    const other = path.join(directory, "other-workspace");
+    await fs.mkdir(path.join(other, ".batty"), { recursive: true });
+    await fs.writeFile(
+      path.join(other, ".batty", "mcp.json"),
+      JSON.stringify({
+        mcpServers: { test: { enabled: false }, local: { command: "does-not-exist" } },
+      }),
+    );
+    await main.configure({ cwd: other }, BACKGROUND_CONTEXT);
+    const second = JSON.parse((await inspect()).content[0].text);
+    expect(first.catalog).toEqual(["mcp__test__echo"]);
+    expect(second).toEqual(first);
+    expect(second.result.cwd).toBe(directory);
+    const status = await tools.mcp.getStatus();
+    expect(status.servers.map((server) => server.name)).toEqual(["test"]);
+    expect(status.servers[0]!.state).toBe("connected");
+    await tools.mcp.removeServer("test");
+    expect((await tools.mcp.catalog()).map((entry) => entry.tool.name)).toEqual([]);
   });
 
-  it("keeps all non-hidden MCP tools inside codemode across reopen and workspace preparation", async () => {
-    const { directory, tools, main, faux, run, reopen, registry } = await fixture(true);
+  it("keeps all non-hidden MCP tools inside codemode across reopen", async () => {
+    const { directory, tools, main, faux, run, reopen } = await fixture(true);
     const server = path.join(directory, "modes.cjs");
     await fs.writeFile(
       server,
       `require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'test',version:'1'}};if(m.method==='tools/list')result={tools:['direct','deferred','script','hidden'].map(name=>({name,description:name,inputSchema:{type:'object',properties:{}}}))};if(m.method==='tools/call')result={content:[{type:'text',text:m.params.name}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')})`,
     );
-    await tools.mcp.setServer(undefined, "modes", {
+    await tools.mcp.setServer("modes", {
       command: process.execPath,
       args: [server],
       exposure: "codemode",
       toolExposure: { direct: "direct", deferred: "deferred", hidden: "hidden" },
     });
-    await tools.syncConversation(main, BACKGROUND_CONTEXT);
     const names = () =>
       main.agent(BACKGROUND_CONTEXT).then((agent) => agent.tools.map((tool) => tool.name));
     expect(await names()).not.toContain("tool_search");
@@ -225,85 +246,10 @@ describe("durable tool bridge", () => {
     expect(discovered.content[0].text).toContain("mcp__modes__direct");
     expect(discovered.content[0].text).toContain("mcp__modes__deferred");
     expect(JSON.parse(discovered.content[0].text).hidden).toBe(false);
-    // Simulate declarations persisted by the old direct/deferred discovery path.
-    const baseNames = await names();
-    await main.commit(async (tx) => {
-      const state = await tx.doc(AgentDoc, main.id);
-      state.extensions = ["batty-tools"];
-      state.tools = [...baseNames, "tool_search", "mcp__modes__direct", "mcp__modes__deferred"];
-    }, BACKGROUND_CONTEXT);
     const restored = await reopen();
-    await tools.syncConversation(restored.main, BACKGROUND_CONTEXT);
-    const restoredNames = (await restored.main.agent(BACKGROUND_CONTEXT)).tools.map(
-      (tool) => tool.name,
-    );
-    expect(restoredNames).not.toContain("tool_search");
-    expect(restoredNames.filter((name) => name.startsWith("mcp__"))).toEqual([]);
-    // Legacy implementations remain callable by already-admitted durable tasks,
-    // while their declarations are stripped from the reopened model request.
-    const legacy = registry
-      .snapshot()
-      .installed()
-      .find((extension) => extension.name.startsWith("batty-mcp-workspace-"))!;
-    await restored.main.configure(
-      {
-        extensions: [tools.extension, legacy],
-        tools: [...tools.extension.tools!, ...legacy.tools!],
-      },
-      BACKGROUND_CONTEXT,
-    );
-    await tools.syncConversation(restored.main, BACKGROUND_CONTEXT);
-    faux.setResponses([
-      (request) => {
-        expect(declared(request)).not.toContain("tool_search");
-        expect(declared(request).filter((name) => name.startsWith("mcp__"))).toEqual([]);
-        return fauxAssistantMessage([fauxToolCall("mcp__modes__direct", {})], {
-          stopReason: "toolUse",
-        });
-      },
-      fauxAssistantMessage([fauxText("replayed")]),
-    ]);
     expect(
-      (
-        await (
-          await restored.main.submit({ type: "input", content: "legacy task" }, BACKGROUND_CONTEXT)
-        ).wait(BACKGROUND_CONTEXT)
-      ).status,
-    ).toBe("done");
-    const replayed = await restored.main.viewState(BACKGROUND_CONTEXT);
-    expect(
-      replayed.value.entries
-        .flatMap((entry) => entry.model ?? [])
-        .findLast(
-          (message) => message.role === "toolResult" && message.toolName === "mcp__modes__direct",
-        ),
-    ).toMatchObject({ isError: false });
-    replayed.dispose();
-    const otherCwd = path.join(directory, "other");
-    await fs.mkdir(otherCwd);
-    const prepared = await tools.prepareAgent(
-      otherCwd,
-      await restored.main.agent(BACKGROUND_CONTEXT),
-      BACKGROUND_CONTEXT,
-    );
-    expect(prepared.tools).not.toContainEqual(
-      expect.objectContaining({ name: "mcp__modes__direct" }),
-    );
-    expect(prepared.tools).not.toContainEqual(
-      expect.objectContaining({ name: "mcp__modes__deferred" }),
-    );
-    await tools.mcp.setServer(undefined, "modes", {
-      command: process.execPath,
-      args: [server],
-      exposure: "codemode",
-      toolExposure: { direct: "hidden", deferred: "codemode", hidden: "hidden" },
-    });
-    await tools.syncConversation(restored.main, BACKGROUND_CONTEXT);
-    expect(
-      (await restored.main.agent(BACKGROUND_CONTEXT)).tools
-        .map((tool) => tool.name)
-        .filter((name) => name.startsWith("mcp__")),
-    ).toEqual([]);
+      (await restored.main.agent(BACKGROUND_CONTEXT)).tools.map((tool) => tool.name),
+    ).not.toContain("mcp__modes__direct");
   });
 
   it("calls Streamable HTTP MCP and interrupts a spinning QuickJS script", async () => {
@@ -343,7 +289,7 @@ describe("durable tool bridge", () => {
       );
     });
     const address = server.address() as { port: number };
-    await tools.mcp.setServer(undefined, "http", {
+    await tools.mcp.setServer("http", {
       url: `http://127.0.0.1:${address.port}/mcp`,
       headers: { Authorization: "Bearer test" },
     });

@@ -110,7 +110,7 @@ onBeforeUnmount(() => loadGeneration++);
       :aria-labelledby="tabId('MCPs')"
       class="tools-popover__pane tools-popover__mcp"
     >
-      <McpSettingsPanel :active="open" :workspace-id="props.workspaceId" />
+      <McpSettingsPanel :active="open" />
     </div>
     <div
       v-for="tab in ['Skills', 'Tools'] as const"

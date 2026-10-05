@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getPackageDir, type McpServerConfig } from "@earendil-works/pi-coding-agent";
 import { toLlmContent } from "@earendil-works/pi-mcp";
 import { Type } from "typebox";
 import type { AppConfig } from "./config";
-import type { WorkspaceInfo, McpSettingsResponse, McpWorkspaceStatus } from "@/shared/types";
+import type { McpSettingsResponse, McpStatus } from "@/shared/types";
 import { stateDirPath } from "./options";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 
@@ -18,7 +17,7 @@ async function nativeModule(name: string): Promise<any> {
 }
 
 export class McpService {
-  private readonly sessions = new Map<string, Promise<any[]>>();
+  private session?: Promise<any[]>;
   private readonly structured = new WeakMap<object, unknown>();
   private readonly attempts = new Map<
     string,
@@ -41,129 +40,77 @@ export class McpService {
     return new McpService(config, { runtime, settings, auth, backend, core });
   }
 
-  private file(workspace?: WorkspaceInfo): string {
-    return path.join(
-      workspace ? path.join(workspace.path, ".batty") : stateDirPath(this.config.battyDir),
-      "mcp.json",
-    );
+  // Shared stdio processes resolve relative commands and paths from Batty's
+  // global data directory, never from a caller's workspace.
+  private get runtimeCwd(): string {
+    return this.config.battyDir;
   }
 
-  private loaded(cwd: string): any {
-    // Native loader uses .pi for project settings; read Batty's selected project
-    // scope separately and apply its definitions/overrides to the global scope.
-    const { settings } = this.modules;
-    const global = settings.loadMcpConfig({
+  private file(): string {
+    return path.join(stateDirPath(this.config.battyDir), "mcp.json");
+  }
+
+  private loaded(): any {
+    return this.modules.settings.loadMcpConfig({
       agentDir: stateDirPath(this.config.battyDir),
-      cwd,
+      cwd: this.runtimeCwd,
       projectTrusted: false,
     });
-    const entries = new Map<string, any>(global.servers.map((entry: any) => [entry.name, entry]));
-    const errors = [...global.errors];
-    const file = path.join(cwd, ".batty", "mcp.json");
-    let project: any;
-    try {
-      project = JSON.parse(readFileSync(file, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-        errors.push(`${file}: ${String(error)}`);
-    }
-    for (const [name, raw] of Object.entries(project?.mcpServers ?? {})) {
-      const definition = raw as any;
-      const inherited = entries.get(name);
-      const override = !("command" in definition || "url" in definition || "type" in definition);
-      if (override && !inherited) {
-        errors.push(`${file}: ${name}: override has no global server`);
-        continue;
-      }
-      if (!override && definition.auth) {
-        errors.push(`${file}: ${name}: auth is only allowed globally`);
-        continue;
-      }
-      const config = this.modules.core.validateMcpServerConfig(
-        name,
-        override ? { ...inherited.config, ...definition } : definition,
-      );
-      if (typeof config === "string") {
-        errors.push(`${file}: ${name}: ${config}`);
-        continue;
-      }
-      entries.set(name, {
-        ...(override ? inherited : { name, source: file, scope: "project" }),
-        config,
-        ...(override ? { override: file } : {}),
-      });
-    }
-    return { servers: [...entries.values()], errors };
   }
 
-  readSettings(workspace?: WorkspaceInfo): McpSettingsResponse {
-    const loaded = workspace
-      ? this.loaded(workspace.path)
-      : this.modules.settings.loadMcpConfig({
-          agentDir: path.dirname(this.file()),
-          cwd: this.config.battyDir,
-          projectTrusted: false,
-        });
-    const file = this.file(workspace);
+  readSettings(): McpSettingsResponse {
+    const loaded = this.loaded();
     return {
-      servers: loaded.servers
-        .filter((entry: any) => entry.source === file || entry.override === file)
-        .map((entry: any) => ({
-          name: entry.name,
-          config: entry.config,
-          scope: workspace ? "workspace" : "global",
-        })),
-      errors: loaded.errors.filter((error: string) => error.startsWith(`${file}:`)),
+      servers: loaded.servers.map((entry: any) => ({
+        name: entry.name,
+        config: entry.config,
+      })),
+      errors: loaded.errors,
     };
   }
 
-  async setServer(
-    workspace: WorkspaceInfo | undefined,
-    name: string,
-    server: McpServerConfig,
-  ): Promise<any> {
+  async setServer(name: string, server: McpServerConfig): Promise<any> {
     const validated = this.modules.core.validateMcpServerConfig(name, server);
     if (typeof validated === "string")
       throw Object.assign(new Error(validated), { statusCode: 400 });
-    if (workspace && "auth" in validated)
-      throw new Error("Provider auth is only allowed in global MCP settings");
-    this.modules.settings.addMcpServerConfig(this.file(workspace), name, validated);
+    this.modules.settings.addMcpServerConfig(this.file(), name, validated);
     await this.invalidate();
-    return this.readSettings(workspace);
+    return this.readSettings();
   }
 
-  async removeServer(workspace: WorkspaceInfo | undefined, name: string): Promise<any> {
-    if (!this.modules.settings.removeMcpServerConfig(this.file(workspace), name))
+  async removeServer(name: string): Promise<any> {
+    if (!this.modules.settings.removeMcpServerConfig(this.file(), name))
       throw Object.assign(new Error("MCP server not found"), { statusCode: 404 });
     await this.invalidate();
-    return this.readSettings(workspace);
+    return this.readSettings();
   }
 
-  private connections(cwd: string): Promise<any[]> {
+  private connections(): Promise<any[]> {
     if (this.closing) throw new Error("MCP service is closed");
-    let pending = this.sessions.get(cwd);
-    if (!pending) {
-      pending = this.open(cwd);
-      this.sessions.set(cwd, pending);
-      pending.catch(() => this.sessions.delete(cwd));
+    if (!this.session) {
+      const pending = this.open();
+      this.session = pending;
+      pending.catch(() => {
+        if (this.session === pending) this.session = undefined;
+      });
     }
-    return pending;
+    return this.session;
   }
 
-  private async open(cwd: string): Promise<any[]> {
+  private async open(): Promise<any[]> {
     const { runtime, auth, backend } = this.modules;
     const agentDir = stateDirPath(this.config.battyDir);
     const credentials = new auth.McpOAuthCredentialStore(
       new backend.FileAuthStorageBackend(path.join(agentDir, "mcp-auth.json")),
       agentDir,
     );
-    const connections = this.loaded(cwd)
+    const connections = this.loaded()
       .servers.filter((entry: any) => entry.config.enabled !== false)
       .map(
         (entry: any) =>
           new runtime.McpServerConnection({
             entry,
-            cwd,
+            cwd: this.runtimeCwd,
             credentials,
             createTransport: runtime.createDefaultTransport,
             onTools: () => {},
@@ -174,8 +121,8 @@ export class McpService {
     return connections;
   }
 
-  async tools(cwd: string): Promise<ToolRegistration[]> {
-    return (await this.connections(cwd)).flatMap((connection: any) =>
+  async tools(): Promise<ToolRegistration[]> {
+    return (await this.connections()).flatMap((connection: any) =>
       connection.tools
         .filter(
           (tool: any) =>
@@ -203,12 +150,12 @@ export class McpService {
     );
   }
 
-  async catalog(
-    cwd: string,
-  ): Promise<Array<{ tool: ToolRegistration; exposure: "direct" | "deferred" | "codemode" }>> {
-    const tools = await this.tools(cwd);
+  async catalog(): Promise<
+    Array<{ tool: ToolRegistration; exposure: "direct" | "deferred" | "codemode" }>
+  > {
+    const tools = await this.tools();
     const exposures = new Map<string, "direct" | "deferred" | "codemode">();
-    for (const connection of await this.connections(cwd))
+    for (const connection of await this.connections())
       for (const tool of connection.tools) {
         const exposure = this.modules.core.getMcpToolExposure(connection.entry.config, tool.name);
         if (exposure !== "hidden")
@@ -227,14 +174,14 @@ export class McpService {
     return this.structured.get(result);
   }
 
-  async getStatus(workspace: WorkspaceInfo): Promise<McpWorkspaceStatus> {
-    const connections = await this.connections(workspace.path);
+  async getStatus(): Promise<McpStatus> {
+    const connections = await this.connections();
     const agentDir = stateDirPath(this.config.battyDir);
     const credentials = new this.modules.auth.McpOAuthCredentialStore(
       new this.modules.backend.FileAuthStorageBackend(path.join(agentDir, "mcp-auth.json")),
       agentDir,
     );
-    const loaded = this.loaded(workspace.path);
+    const loaded = this.loaded();
     return {
       servers: loaded.servers.map((entry: any) => {
         const connection = connections.find((connection: any) => connection.name === entry.name);
@@ -242,7 +189,6 @@ export class McpService {
           name: entry.name,
           state: connection?.state ?? "disabled",
           error: connection?.error,
-          scope: entry.scope,
           source: entry.source,
           tools: (connection?.tools ?? []).map((tool: any) => ({
             name: tool.name,
@@ -259,25 +205,21 @@ export class McpService {
     };
   }
 
-  async reconnect(workspace: WorkspaceInfo, name: string): Promise<any> {
-    const connection = (await this.connections(workspace.path)).find(
-      (value: any) => value.name === name,
-    );
+  async reconnect(name: string): Promise<any> {
+    const connection = (await this.connections()).find((value: any) => value.name === name);
     if (!connection) throw new Error(`Unknown MCP server: ${name}`);
     await connection.reconnect();
-    return this.getStatus(workspace);
+    return this.getStatus();
   }
 
-  async logout(workspace: WorkspaceInfo, name: string): Promise<any> {
-    const connection = (await this.connections(workspace.path)).find(
-      (value: any) => value.name === name,
-    );
+  async logout(name: string): Promise<any> {
+    const connection = (await this.connections()).find((value: any) => value.name === name);
     if (!connection) throw new Error(`Unknown MCP server: ${name}`);
     await connection.signOut();
-    return this.getStatus(workspace);
+    return this.getStatus();
   }
 
-  startAuth(workspace: WorkspaceInfo, name: string): any {
+  startAuth(name: string): any {
     if (this.closing) throw new Error("MCP service is closed");
     if ([...this.attempts.values()].some((attempt) => attempt.state.status === "pending"))
       throw Object.assign(new Error("MCP sign-in already pending"), { statusCode: 409 });
@@ -285,7 +227,6 @@ export class McpService {
       {
         state: {
           attemptId: randomUUID(),
-          workspaceId: workspace.id,
           serverName: name,
           status: "pending",
         },
@@ -293,9 +234,7 @@ export class McpService {
     this.attempts.set(attempt.state.attemptId, attempt);
     attempt.task = (async () => {
       try {
-        const connection = (await this.connections(workspace.path)).find(
-          (value: any) => value.name === name,
-        );
+        const connection = (await this.connections()).find((value: any) => value.name === name);
         if (!connection?.oauthUrl) throw new Error(`MCP server does not use OAuth: ${name}`);
         if (attempt.state.status !== "pending") return;
         const agentDir = stateDirPath(this.config.battyDir);
@@ -365,8 +304,8 @@ export class McpService {
   }
 
   private async invalidate(): Promise<void> {
-    const pending = [...this.sessions.values()];
-    this.sessions.clear();
+    const pending = this.session ? [this.session] : [];
+    this.session = undefined;
     await Promise.all(
       pending.map(async (value) =>
         Promise.all((await value).map((connection: any) => connection.close())),

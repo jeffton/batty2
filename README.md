@@ -12,6 +12,8 @@ One permanent assistant chat. Workspaces are execution scopes for subagents and 
 - Cron supports fresh workers, main-inline execution, and detached workers. `daily-inline` and `daily-detached` are accepted mode names; they target the permanent main thread rather than daily sessions. Fresh-worker cron results also reach main.
 - Batty's thread rendering, file tools, browser, web search, sites, attachments, passkeys, MCP, and QuickJS codemode are reused selectively. There is no executor.
 
+MCP uses one configuration (`/var/lib/batty2/.batty/mcp.json`) and one shared connection registry for every workspace. Stdio servers run from `/var/lib/batty2` (the configured Batty data directory); use absolute paths for workspace-specific resources. Tools are discovered and called only through code mode. Settings use `/api/settings/mcp`; connection status and actions use `/api/mcp`. Workspace MCP files, overrides, scoped API parameters, and legacy direct-tool replay are unsupported.
+
 State lives in `/var/lib/batty2/.batty`; source lives in `/root/github/batty2`. Existing Batty uses separate state and remains independent. Provider OAuth credentials share the SDK's locked credential store through `BATTY_PROVIDER_AUTH_PATH`; passkeys and application secrets are isolated. Original history and reasoning are retained; reasoning is excluded from memory compression.
 
 Outgoing prompts appear immediately, including attachment names, and survive page refresh until the server publishes the matching user message. Failed submissions restore the draft; cancelled queued prompts remove their outgoing entry.

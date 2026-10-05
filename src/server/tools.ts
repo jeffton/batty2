@@ -17,8 +17,6 @@ import {
   type ToolRegistration,
   type ToolExecutionApi,
   type Harness,
-  type Registry,
-  type Conversation,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
@@ -42,7 +40,6 @@ import { createBattyReadTool } from "./read-tool";
 import { createCodemodeTasks } from "./codemode-tasks";
 import { cancelPersistentBashJobs } from "./durable-bash-cancel";
 import { createBashAbortWatcher } from "./tools-abort-watcher";
-import { createMcpExposure } from "./mcp-exposure";
 
 export async function toolCwd(api: ToolExecutionApi, ctx: Context): Promise<string> {
   const cwd = api.env?.cwd ?? (await api.agent(ctx)).cwd;
@@ -65,7 +62,6 @@ export async function createTools(
     path.join(stateDirPath(config.battyDir), "browser"),
   );
   const mcp = await McpService.create(config);
-  const mcpExposure = createMcpExposure(mcp);
   const sandboxes = new Set<CodemodeSandbox>();
   const registered = new Map<string, ToolRegistration>();
   let harness: Harness | undefined;
@@ -191,7 +187,7 @@ export async function createTools(
         ...agent.tools,
         ...registered.values(),
         ...((await resolveExtraTools?.(api, ctx)) ?? []),
-        ...(await mcp.tools(await toolCwd(api, ctx))),
+        ...(await mcp.tools()),
       ].map((tool) => [tool.name, tool]),
     );
     return [...all.values()];
@@ -239,21 +235,6 @@ export async function createTools(
     extension,
     mcp,
     browserService,
-    bindRegistry(value: Registry) {
-      mcpExposure.bindRegistry(value);
-    },
-    installMcpScopes(cwds: readonly string[]) {
-      return mcpExposure.installScopes(cwds);
-    },
-    syncMcpConversation(conversation: Conversation, ctx: Context) {
-      return mcpExposure.syncConversation(conversation, ctx);
-    },
-    syncConversation(conversation: Conversation, ctx: Context) {
-      return mcpExposure.syncConversation(conversation, ctx);
-    },
-    prepareAgent(cwd: string, agent: import("@earendil-works/pi-durable").Agent, ctx: Context) {
-      return mcpExposure.prepareAgent(cwd, agent, ctx);
-    },
     bindHarness(value: Harness) {
       harness = value;
       abortWatcher.bind(value);
