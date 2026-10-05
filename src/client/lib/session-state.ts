@@ -18,7 +18,12 @@ function mergeRetainedActiveTools(
   incoming: SessionState,
   previous?: SessionState,
 ): ActiveToolRun[] {
-  if (!previous || previous.sessionId !== incoming.sessionId || previous.activeTools.length === 0) {
+  if (
+    !previous ||
+    previous.sessionId !== incoming.sessionId ||
+    previous.streamId !== incoming.streamId ||
+    previous.activeTools.length === 0
+  ) {
     return incoming.activeTools;
   }
   if (incoming.activeTools.length === 0 && !incoming.isStreaming) {

@@ -12,11 +12,16 @@ git archive HEAD | tar -x -C "$build"
   pnpm install --frozen-lockfile
   pnpm check
   pnpm test
-  pnpm build
+  BATTY_BUILD_ID="$revision" pnpm build
 )
 release="/opt/batty2/releases/${revision}.$(date +%s)"
 mkdir -p "$release"
 cp -a "$build"/{dist,package.json,pnpm-lock.yaml,pnpm-workspace.yaml,README.md} "$release/"
+# Editing clients may keep the previous JS after the new worker activates.
+# Retain immutable chunks so their lazy imports continue to work.
+if [[ -d /opt/batty2/current/dist/client/assets ]]; then
+  cp -an /opt/batty2/current/dist/client/assets/. "$release/dist/client/assets/"
+fi
 printf '%s\n' "$revision" > "$release/BUILD_ID"
 (cd "$release" && pnpm install --prod --frozen-lockfile)
 ln -sfn "$release" /opt/batty2/next

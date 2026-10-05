@@ -68,6 +68,7 @@ beforeEach(() => {
   vi.stubGlobal(
     "EventSource",
     class {
+      addEventListener() {}
       close() {}
     },
   );
@@ -137,6 +138,57 @@ describe("main mutation snapshots", () => {
     vi.mocked(api.patchMain).mockResolvedValueOnce({ ...state(5), model: "chosen" });
     await store.setModel("chosen");
     expect(store.activeSession?.model).toBe("chosen");
+  });
+});
+
+describe("stream recovery", () => {
+  it("replaces a silent connection, ignores its late messages and accepts a restart reset", () => {
+    vi.useFakeTimers();
+    const streams: any[] = [];
+    vi.stubGlobal(
+      "EventSource",
+      class {
+        close = vi.fn();
+        addEventListener = vi.fn();
+        constructor() {
+          streams.push(this);
+        }
+      },
+    );
+    const store = useAppStore();
+    store.activeSession = { ...state(99), isStreaming: true };
+    store.openStream();
+    vi.advanceTimersByTime(75_000);
+    expect(streams).toHaveLength(2);
+    expect(streams[0].close).toHaveBeenCalledOnce();
+    streams[1].onmessage({
+      data: JSON.stringify({
+        type: "reset",
+        state: state(1, "restart"),
+        streamId: "restart",
+        revision: 1,
+      }),
+    });
+    streams[0].onmessage({
+      data: JSON.stringify({
+        type: "reset",
+        state: state(100),
+        streamId: "generation-a",
+        revision: 100,
+      }),
+    });
+    expect(store.activeSession?.streamId).toBe("restart");
+    expect(store.activeSession?.isStreaming).toBe(false);
+    store.closeStream();
+    vi.useRealTimers();
+  });
+  it("resynchronizes via a fresh SSE snapshot on pageshow and visibility resume", async () => {
+    wrapper = mount(App, { global: { plugins: [pinia], stubs: { RouterView: true } } });
+    await flushPromises();
+    const open = vi.spyOn(useAppStore(), "openStream");
+    window.dispatchEvent(new Event("pageshow"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(open).toHaveBeenCalledTimes(2);
   });
 });
 

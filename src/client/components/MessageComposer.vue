@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Compass, ListOrdered, Paperclip, SendHorizontal } from "@lucide/vue";
+import { blockAppReload } from "@/client/lib/app-updates";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ComposerQueuedPrompts from "@/client/components/ComposerQueuedPrompts.vue";
 import ModelConfigSelector from "@/client/components/ModelConfigSelector.vue";
@@ -50,6 +51,13 @@ const maxInputHeight = ref(240);
 const inputFocused = ref(false);
 const actionsDisabled = computed(() => Boolean(props.disabled || props.actionsDisabled));
 const hasPayload = computed(() => text.value.trim().length > 0 || files.value.length > 0);
+const unblockReload = blockAppReload(
+  () =>
+    text.value.length > 0 ||
+    files.value.length > 0 ||
+    [...draftFilesBySessionKey.values()].some((draft) => draft.length > 0),
+);
+onBeforeUnmount(unblockReload);
 
 let textareaResizeObserver: ResizeObserver | undefined;
 let textareaHeightAnimationFrame: number | undefined;

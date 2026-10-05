@@ -29,6 +29,40 @@ function state(messages: UiMessage[], revision: number): SessionState {
   };
 }
 describe("main transcript resets", () => {
+  it("does not retain an interrupted tool across restart while a different turn runs", () => {
+    const messages: UiMessage[] = [
+      {
+        id: "assistant",
+        role: "assistant",
+        turnPhase: "intermediate",
+        timestamp: 1,
+        blocks: [{ type: "toolCall", id: "interrupted", name: "bash", arguments: {} }],
+      },
+    ];
+    const previous = {
+      ...state(messages, 99),
+      isStreaming: true,
+      activeTools: [
+        {
+          toolCallId: "interrupted",
+          toolName: "bash",
+          args: {},
+          blocks: [],
+          status: "running" as const,
+          isError: false,
+        },
+      ],
+    };
+    const incoming = { ...state(messages, 1), streamId: "restart", isStreaming: true };
+    const merged = applyServerEvent(previous, {
+      type: "reset",
+      state: incoming,
+      revision: 1,
+      streamId: "restart",
+    });
+    expect(merged?.activeTools).toEqual([]);
+    expect(merged?.isStreaming).toBe(true);
+  });
   it("retains paginated history and replaces overlapping durable entries with current data", () => {
     const previous = state(
       [message("entry-alpha"), message("entry-beta"), message("entry-gamma")],

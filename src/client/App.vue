@@ -2,22 +2,33 @@
 import { onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "@/client/stores/app";
+import { checkAppUpdate } from "@/client/lib/app-updates";
 const store = useAppStore();
 const router = useRouter();
 const offline = () => {
   store.connectionState = "offline";
 };
 const online = () => {
+  void checkAppUpdate().catch((error) => {
+    store.lastError = String(error);
+  });
   void store.recoverConnection();
+};
+const visible = () => {
+  if (document.visibilityState !== "hidden") online();
 };
 onMounted(() => {
   window.addEventListener("offline", offline);
   window.addEventListener("online", online);
+  window.addEventListener("pageshow", online);
+  document.addEventListener("visibilitychange", visible);
   void store.bootstrap();
 });
 onUnmounted(() => {
   window.removeEventListener("offline", offline);
   window.removeEventListener("online", online);
+  window.removeEventListener("pageshow", online);
+  document.removeEventListener("visibilitychange", visible);
   store.closeStream();
 });
 watch(

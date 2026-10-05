@@ -128,7 +128,10 @@ function settingsStatus() {
   };
 }
 app.get("/healthz", async () => ({ ok: true, mainSessionId: String(runtime.main.id), buildId }));
-app.get("/api/version", async () => ({ buildId }));
+app.get("/api/version", async (_request, reply) => {
+  reply.header("Cache-Control", "no-store");
+  return { buildId };
+});
 app.get("/api/bootstrap", async (request) => ({
   authenticated: request.auth,
   auth: request.auth
@@ -346,7 +349,7 @@ for (const url of ["/api/main/events", "/api/sessions/:sessionId/events"]) {
       void watch.stop();
     });
     const heartbeat = setInterval(() => {
-      if (!closed) reply.raw.write(": heartbeat\n\n");
+      if (!closed) reply.raw.write("event: heartbeat\ndata: {}\n\n");
     }, 20_000);
     await send(watch.value);
     watch.start(async (value, ops) => {

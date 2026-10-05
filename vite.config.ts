@@ -5,13 +5,24 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   base: "./",
+  define: { __BATTY_BUILD_ID__: JSON.stringify(process.env.BATTY_BUILD_ID ?? "dev") },
   plugins: [
     vue(),
+    {
+      name: "build-marker",
+      transformIndexHtml: () => [
+        {
+          tag: "meta",
+          attrs: { name: "batty-build", content: process.env.BATTY_BUILD_ID ?? "dev" },
+          injectTo: "head",
+        },
+      ],
+    },
     VitePWA({
       strategies: "injectManifest",
       srcDir: "src/client",
       filename: "sw.ts",
-      registerType: "autoUpdate",
+      registerType: "prompt",
       includeAssets: ["favicon.png", "apple-touch-icon.png"],
       manifest: false,
       injectManifest: {
