@@ -115,8 +115,8 @@ onUnmounted(() => clearInterval(clock));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.6rem;
-  height: 1.6rem;
+  width: var(--header-target-size, 48px);
+  height: var(--header-target-size, 48px);
   flex-shrink: 0;
   padding: 0;
   border: 0;
@@ -130,11 +130,11 @@ onUnmounted(() => clearInterval(clock));
 }
 .usage:focus-visible {
   outline: 2px solid var(--color-text-subtle);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 .usage svg {
-  width: 100%;
-  height: 100%;
+  width: 1.6rem;
+  height: 1.6rem;
 }
 .usage__track {
   fill: var(--color-border-soft);

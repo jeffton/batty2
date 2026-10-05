@@ -94,6 +94,7 @@ async function logout() {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  --header-target-size: 48px;
   min-width: 0;
   padding: calc(var(--safe-area-top) + 0.5rem) calc(var(--safe-area-right) + 0.65rem) 0.5rem
     calc(var(--safe-area-left) + 0.65rem);
@@ -116,8 +117,10 @@ async function logout() {
 .header__button {
   display: grid;
   place-items: center;
-  width: 2rem;
-  height: 2rem;
+  width: var(--header-target-size);
+  height: var(--header-target-size);
+  flex-shrink: 0;
+  padding: 0;
   border: 0;
   border-radius: 0.5rem;
   background: transparent;
@@ -125,6 +128,10 @@ async function logout() {
 }
 .header__button:hover {
   background: var(--color-bg-elevated);
+}
+.header__button:focus-visible {
+  outline: 2px solid var(--color-text-subtle);
+  outline-offset: -2px;
 }
 .header__spacer {
   flex: 1;
@@ -148,9 +155,20 @@ async function logout() {
 .workspace-list p {
   padding: 1rem;
 }
-@media (max-width: 420px) {
+@media (max-width: 540px) {
   .header__brand strong {
     display: none;
+  }
+}
+@media (max-width: 360px) {
+  .header {
+    --header-target-size: 44px;
+    gap: 2px;
+    padding-right: calc(var(--safe-area-right) + 4px);
+    padding-left: calc(var(--safe-area-left) + 4px);
+  }
+  .header__brand {
+    padding-right: 0;
   }
 }
 </style>

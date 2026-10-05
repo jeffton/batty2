@@ -163,6 +163,16 @@ const contextArcClass = computed(() => {
   animation: session-header-status-spin 0.9s linear infinite;
 }
 
+@media (max-width: 360px) {
+  .session-header-status {
+    gap: 2px;
+  }
+  .session-header-status__context,
+  .session-header-status__connection {
+    width: 20px;
+  }
+}
+
 @keyframes session-header-status-spin {
   to {
     transform: rotate(360deg);
