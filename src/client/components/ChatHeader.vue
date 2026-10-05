@@ -105,7 +105,6 @@ async function logout() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding-right: 0.5rem;
   font-size: 0.9rem;
 }
 .header__brand img {
