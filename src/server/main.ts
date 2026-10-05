@@ -8,7 +8,13 @@ import staticFiles from "@fastify/static";
 import type { ModelThinkingLevel, UserMessage } from "@earendil-works/pi-ai";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { loadConfig, resolveBattyDir, readEnvironmentFile, updateEnvironmentFile } from "./config";
-import { stateDirPath, setAppearance, setBraveSearchKey, setDefaultModel } from "./options";
+import {
+  stateDirPath,
+  setAppearance,
+  setBraveSearchKey,
+  setDefaultModel,
+  setMemoryModel,
+} from "./options";
 import { listWorkspaces } from "./workspaces";
 import { PasskeyAuthService, formatSetupCode } from "./passkeys";
 import { verifyAuthToken } from "./auth";
@@ -113,6 +119,8 @@ function settingsStatus() {
     braveSearchConfigured: Boolean(config.braveSearchKey),
     defaultProvider: config.defaultProvider,
     defaultModel: config.defaultModel,
+    memoryModel: config.memoryModel,
+    memoryReasoning: process.env.BATTY_MEMORY_REASONING ?? "low",
     defaultThinkingLevel: config.defaultThinkingLevel,
     appearance: { title: config.appTitle, color: config.appColor },
   };
@@ -490,6 +498,11 @@ app.post<{ Body: { modelId: string; thinkingLevel: string } }>(
     return settingsStatus();
   },
 );
+app.post<{ Body: { modelId: string } }>("/api/settings/memory-model", async (request) => {
+  const settings = await setMemoryModel(config.battyDir, request.body.modelId);
+  config.memoryModel = settings.memoryModel;
+  return settingsStatus();
+});
 app.get("/api/settings/environment", async () => ({
   names: Object.keys(await readEnvironmentFile(config.battyDir)).sort(),
 }));

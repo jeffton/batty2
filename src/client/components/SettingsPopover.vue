@@ -47,6 +47,14 @@ const appearanceTitle = ref("");
 const appearanceColor = ref<AppColor>("neutral");
 const appearanceSaving = ref(false);
 const appearanceError = ref("");
+const memoryModelSaving = ref(false);
+const memoryModelError = ref("");
+const memoryModelLabel = computed(
+  () =>
+    store.models
+      .find((model) => model.id === store.settings.memoryModel)
+      ?.label.split(" · ", 1)[0] ?? store.settings.memoryModel,
+);
 const defaultModelSaving = ref(false);
 const defaultModelError = ref("");
 const braveSearchInput = ref("");
@@ -312,6 +320,18 @@ async function saveApiKey(providerId: "google" | "openrouter"): Promise<void> {
   }
 }
 
+async function saveMemoryModel(modelId: string): Promise<void> {
+  memoryModelSaving.value = true;
+  memoryModelError.value = "";
+  try {
+    await store.setMemoryModel(modelId);
+  } catch (error) {
+    memoryModelError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    memoryModelSaving.value = false;
+  }
+}
+
 async function saveDefaultModel(modelId: string): Promise<void> {
   const model = store.models.find((candidate) => candidate.id === modelId);
   await saveDefaultModelConfig(
@@ -507,6 +527,28 @@ function handlePopoverToggle(event: Event): void {
         />
         <div v-if="defaultModelError" class="settings-popover__error" role="alert">
           {{ defaultModelError }}
+        </div>
+      </section>
+
+      <section class="settings-popover__section">
+        <div class="settings-popover__group-title">Memory model</div>
+        <div class="settings-popover__help">Used to build OptChat memory summaries.</div>
+        <ModelConfigSelector
+          :model-label="memoryModelLabel"
+          :effort-label="store.settings.memoryReasoning"
+          aria-label="Choose memory model"
+          @refresh-models="store.refreshModels"
+          popover-id="settings-memory-model-popover"
+          anchor-name="--settings-memory-model-anchor"
+          :models="store.models"
+          :current-model-id="store.settings.memoryModel"
+          :current-thinking-level="store.settings.memoryReasoning"
+          :thinking-options="[]"
+          :disabled="memoryModelSaving"
+          @set-model="saveMemoryModel"
+        />
+        <div v-if="memoryModelError" class="settings-popover__error" role="alert">
+          {{ memoryModelError }}
         </div>
       </section>
 

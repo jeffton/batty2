@@ -27,6 +27,7 @@ export interface AppConfig {
   browserMaxTabs: number;
   defaultProvider?: string;
   defaultModel?: string;
+  memoryModel: string;
   defaultThinkingLevel?: DefaultThinkingLevel;
   baseUrl: string;
   appTitle: string;
@@ -134,6 +135,7 @@ export async function loadConfig(battyDir: string): Promise<AppConfig> {
     browserMaxTabs: options.browserMaxTabs ?? DEFAULT_BROWSER_MAX_TABS,
     defaultProvider: options.defaultProvider,
     defaultModel: options.defaultModel,
+    memoryModel: options.memoryModel,
     defaultThinkingLevel: options.defaultThinkingLevel,
     baseUrl: options.baseUrl,
     appTitle: options.appTitle,

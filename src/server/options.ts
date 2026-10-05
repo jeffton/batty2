@@ -23,6 +23,7 @@ export type DefaultThinkingLevel = (typeof DEFAULT_THINKING_LEVELS)[number];
 export const DEFAULT_BROWSER_MAX_TABS = 16;
 
 export interface StoredAppOptions {
+  memoryModel?: string;
   authSecret?: string;
   workspacesRoots?: string[];
   webPushSubject?: string;
@@ -41,6 +42,7 @@ export interface StoredAppOptions {
 }
 
 export interface AppOptions {
+  memoryModel: string;
   authSecret: string;
   workspacesRoots: string[];
   webPushSubject: string;
@@ -217,6 +219,7 @@ function normalizeStoredOptions(options: StoredAppOptions | undefined): AppOptio
     assistantWorkspaceId: normalizeOptionalString(options?.assistantWorkspaceId),
     defaultProvider: normalizeOptionalString(options?.defaultProvider),
     defaultModel: normalizeOptionalString(options?.defaultModel),
+    memoryModel: options?.memoryModel ?? "openai-codex/gpt-6-luna",
     defaultThinkingLevel: normalizeThinkingLevel(options?.defaultThinkingLevel),
     baseUrl: normalizeBaseUrl(options?.baseUrl),
     appTitle: normalizeAppTitle(options?.appTitle),
@@ -326,6 +329,16 @@ export async function setDefaultModel(
     defaultThinkingLevel: normalizeThinkingLevel(defaultThinkingLevel),
   };
 
+  await writeStoredOptions(projectRoot, nextOptions);
+  return nextOptions;
+}
+
+export async function setMemoryModel(
+  projectRoot: string,
+  memoryModel: string,
+): Promise<AppOptions> {
+  const options = await loadAppOptions(projectRoot);
+  const nextOptions = { ...options, memoryModel };
   await writeStoredOptions(projectRoot, nextOptions);
   return nextOptions;
 }

@@ -227,6 +227,14 @@ export function listWorkspaces(): Promise<WorkspaceInfo[]> {
   );
 }
 
+export function setMemoryModel(modelId: string): Promise<AppSettingsStatus> {
+  return request("/api/settings/memory-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ modelId }),
+  });
+}
+
 export function setDefaultModel(
   modelId: string,
   thinkingLevel: string,

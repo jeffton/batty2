@@ -177,7 +177,9 @@ export class Runtime {
     const orchestration = createOrchestration(config);
     const memory = createMemory(
       {
-        memoryModel: process.env.BATTY_MEMORY_MODEL ?? "openai-codex/gpt-6-luna",
+        get memoryModel() {
+          return config.memoryModel;
+        },
         memoryReasoning: (process.env.BATTY_MEMORY_REASONING ??
           "low") as MemoryConfig["memoryReasoning"],
       },

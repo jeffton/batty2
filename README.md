@@ -71,7 +71,7 @@ pnpm import
 
 Only Roy sessions carrying the daily-session marker are selected. Every source record retains provenance; repeated imports are deduplicated. Adding source records is supported only before live main-thread work begins. Referenced attachments and sites retain their route identities. Other workspaces, ordinary sessions, workers, and cron schedules are not imported.
 
-Imported user messages and final assistant replies enter OptChat memory; original tool calls, tool results, and metadata remain in permanent history. Memory preparation runs independently after import and reports progress through `/api/memory/status`. The default summarizer is `openai-codex/gpt-6-luna` with low reasoning; `BATTY_MEMORY_MODEL` and `BATTY_MEMORY_REASONING` configure it. `scripts/prepare-memory.ts` prepares memory without starting HTTP.
+Imported user messages and final assistant replies enter OptChat memory; original tool calls, tool results, and metadata remain in permanent history. Memory preparation runs independently after import and reports progress through `/api/memory/status`. The default summarizer is `openai-codex/gpt-6-luna` with low reasoning; Settings → Memory model selects the summarizer and persists it in Batty options. `BATTY_MEMORY_REASONING` configures reasoning. `BATTY_MEMORY_MODEL` is not used. `scripts/prepare-memory.ts` prepares memory without starting HTTP.
 
 ## References
 
