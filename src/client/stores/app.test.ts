@@ -12,7 +12,9 @@ import { applyServerEvent } from "@/client/lib/session-events";
 import type { BootstrapPayload, SessionState } from "@/shared/types";
 
 const { replace } = vi.hoisted(() => ({ replace: vi.fn() }));
-vi.mock("vue-router", () => ({ useRouter: () => ({ replace }) }));
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ replace, currentRoute: { value: { path: "/login" } } }),
+}));
 vi.mock("@/client/lib/appearance", () => ({ applyAppAppearance: vi.fn() }));
 vi.mock("@/client/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/client/lib/api")>()),
