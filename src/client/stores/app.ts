@@ -14,12 +14,21 @@ let source: EventSource | undefined;
 let watchdog: ReturnType<typeof setInterval> | undefined;
 let lastActivity = 0;
 let uploads = 0;
+let updateError: string | undefined;
+let bootstrapping: Promise<void> | undefined;
 blockAppReload(() => uploads > 0);
 export const useAppStore = defineStore("app", {
   state: createAppState,
   actions: {
     ...providerSettingsActions,
     async bootstrap() {
+      if (bootstrapping) return bootstrapping;
+      bootstrapping = this.loadBootstrap().finally(() => {
+        bootstrapping = undefined;
+      });
+      return bootstrapping;
+    },
+    async loadBootstrap() {
       try {
         const payload = await api.getBootstrap();
         this.authenticated = payload.authenticated;
@@ -52,6 +61,18 @@ export const useAppStore = defineStore("app", {
       if (this.bootstrapFailed || !this.bootstrapped || !this.activeSession) await this.bootstrap();
       else if (this.authenticated) this.openStream();
     },
+    async checkForUpdates() {
+      try {
+        await checkAppUpdate();
+        if (updateError && this.lastError === updateError) this.lastError = undefined;
+        updateError = undefined;
+        // Resume may have attempted bootstrap while the backend was restarting.
+        if (this.bootstrapFailed) await this.recoverConnection();
+      } catch (error) {
+        updateError = String(error);
+        this.lastError = updateError;
+      }
+    },
     openStream() {
       this.closeStream();
       this.connectionState = "connecting";
@@ -65,17 +86,13 @@ export const useAppStore = defineStore("app", {
       watchdog = setInterval(() => {
         if (document.visibilityState === "hidden") return;
         if (Date.now() - lastActivity > 65_000) this.openStream();
-        void checkAppUpdate().catch((error) => {
-          this.lastError = String(error);
-        });
+        void this.checkForUpdates();
       }, 15_000);
       current.onopen = () => {
         if (source !== current) return;
         touch();
         this.connectionState = "online";
-        void checkAppUpdate().catch((error) => {
-          this.lastError = String(error);
-        });
+        void this.checkForUpdates();
       };
       current.onerror = () => {
         if (source !== current) return;

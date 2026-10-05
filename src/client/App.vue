@@ -2,16 +2,13 @@
 import { onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "@/client/stores/app";
-import { checkAppUpdate } from "@/client/lib/app-updates";
 const store = useAppStore();
 const router = useRouter();
 const offline = () => {
   store.connectionState = "offline";
 };
 const online = () => {
-  void checkAppUpdate().catch((error) => {
-    store.lastError = String(error);
-  });
+  void store.checkForUpdates();
   void store.recoverConnection();
 };
 const visible = () => {

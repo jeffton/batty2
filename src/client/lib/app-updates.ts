@@ -24,25 +24,33 @@ export function initializeBuild(buildId: string | undefined): void {
   loadedBuild ??= buildId;
 }
 
+async function fetchAvailable(path: string, label: string): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(withBaseUrl(path), {
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.ok) return response;
+    // Deploys can briefly leave the proxy without a healthy backend. Wait for
+    // it rather than navigating into the same outage. Persistent errors surface.
+    if (attempt >= 2 || ![502, 503, 504].includes(response.status)) {
+      throw new Error(`${label} check failed: ${response.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+}
+
 export async function checkAppUpdate(): Promise<void> {
   if (checking) return checking;
   checking = (async () => {
-    const response = await fetch(withBaseUrl("/api/version"), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error(`Version check failed: ${response.status}`);
+    const response = await fetchAvailable("/api/version", "Version");
     const { buildId } = await response.json();
     initializeBuild(buildId);
-    if (buildId !== loadedBuild) pendingBuild = buildId;
+    pendingBuild = buildId !== loadedBuild ? buildId : undefined;
     if (!pendingBuild || reloading || !canReloadApp()) return;
     if (sessionStorage.getItem("batty:reload-build") === pendingBuild) return;
     // Verify online HTML before navigating; an offline cached shell must not loop.
-    const shell = await fetch(withBaseUrl("/index.html"), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!shell.ok) throw new Error(`App shell check failed: ${shell.status}`);
+    const shell = await fetchAvailable("/index.html", "App shell");
     const html = new DOMParser().parseFromString(await shell.text(), "text/html");
     if (html.querySelector('meta[name="batty-build"]')?.getAttribute("content") !== pendingBuild)
       return;

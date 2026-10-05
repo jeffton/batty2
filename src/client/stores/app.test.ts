@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 import * as api from "@/client/lib/api";
+import * as updates from "@/client/lib/app-updates";
 import App from "@/client/App.vue";
 import ChatHeader from "@/client/components/ChatHeader.vue";
 import ChatSessionPane from "@/client/components/ChatSessionPane.vue";
@@ -142,6 +143,35 @@ describe("main mutation snapshots", () => {
 });
 
 describe("stream recovery", () => {
+  it("clears a recovered version-check error without clearing unrelated errors", async () => {
+    const check = vi.spyOn(updates, "checkAppUpdate");
+    const store = useAppStore();
+    check.mockRejectedValueOnce(new Error("Version check failed: 502"));
+    await store.checkForUpdates();
+    expect(store.lastError).toBe("Error: Version check failed: 502");
+    check.mockResolvedValueOnce();
+    await store.checkForUpdates();
+    expect(store.lastError).toBeUndefined();
+    check.mockRejectedValueOnce(new Error("Version check failed: 502"));
+    await store.checkForUpdates();
+    store.lastError = "Upload failed";
+    check.mockResolvedValueOnce();
+    await store.checkForUpdates();
+    expect(store.lastError).toBe("Upload failed");
+    check.mockRestore();
+  });
+  it("retries failed bootstrap once the version check reaches the recovered backend", async () => {
+    const check = vi.spyOn(updates, "checkAppUpdate").mockResolvedValueOnce();
+    const store = useAppStore();
+    vi.mocked(api.getBootstrap).mockRejectedValueOnce(new Error("Bootstrap failed: 502"));
+    await store.bootstrap();
+    expect(store.bootstrapFailed).toBe(true);
+    await store.checkForUpdates();
+    expect(store.bootstrapFailed).toBe(false);
+    expect(store.activeSession?.id).toBe("main");
+    expect(store.connectionState).toBe("connecting");
+    check.mockRestore();
+  });
   it("replaces a silent connection, ignores its late messages and accepts a restart reset", () => {
     vi.useFakeTimers();
     const streams: any[] = [];
@@ -193,6 +223,28 @@ describe("stream recovery", () => {
 });
 
 describe("authentication recovery", () => {
+  it("coalesces concurrent resume and version-check bootstrap recovery", async () => {
+    const check = vi.spyOn(updates, "checkAppUpdate").mockResolvedValue();
+    let resolve!: (payload: BootstrapPayload) => void;
+    vi.mocked(api.getBootstrap).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const store = useAppStore();
+    store.bootstrapFailed = true;
+    const resumed = store.recoverConnection();
+    const version = store.checkForUpdates();
+    const concurrent = store.checkForUpdates();
+    await flushPromises();
+    expect(api.getBootstrap).toHaveBeenCalledOnce();
+    resolve(bootstrap);
+    await Promise.all([resumed, version, concurrent]);
+    expect(store.bootstrapFailed).toBe(false);
+    expect(store.authenticated).toBe(true);
+    expect(store.activeSession?.id).toBe("main");
+    check.mockRestore();
+  });
   it("retries an initial bootstrap transport failure on the browser online event", async () => {
     vi.mocked(api.getBootstrap).mockRejectedValueOnce(new TypeError("Network unavailable"));
     wrapper = mount(App, { global: { plugins: [pinia], stubs: { RouterView: true } } });
