@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderOpen, Settings, Wrench, Clock3 } from "@lucide/vue";
+import { FolderOpen, Wrench, Clock3 } from "@lucide/vue";
 import { useAppStore } from "@/client/stores/app";
 import FullPopover from "./FullPopover.vue";
 import SettingsPopover from "./SettingsPopover.vue";
@@ -18,7 +18,16 @@ async function logout() {
 <template>
   <header class="header">
     <div class="header__brand">
-      <img src="/favicon.png" alt="" /><strong>{{ store.settings.appearance.title }}</strong>
+      <button
+        type="button"
+        class="header__button"
+        popovertarget="settings-popover"
+        aria-label="Settings"
+        title="Settings"
+      >
+        <img src="/favicon.png" alt="" />
+      </button>
+      <strong>{{ store.settings.appearance.title }}</strong>
     </div>
     <button
       type="button"
@@ -46,15 +55,6 @@ async function logout() {
       title="MCPs, skills and tools"
     >
       <Wrench :size="17" />
-    </button>
-    <button
-      type="button"
-      class="header__button"
-      popovertarget="settings-popover"
-      aria-label="Settings"
-      title="Settings"
-    >
-      <Settings :size="17" />
     </button>
     <div class="header__spacer" />
     <SessionHeaderStatus
