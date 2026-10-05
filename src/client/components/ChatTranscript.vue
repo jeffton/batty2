@@ -3,6 +3,7 @@ import { ArrowDown } from "@lucide/vue";
 import { Virtualizer } from "virtua/vue";
 import { ref } from "vue";
 import ChatMessage from "@/client/components/ChatMessage.vue";
+import TranscriptDetailsButton from "@/client/components/TranscriptDetailsButton.vue";
 import type { TranscriptDisplayEntry } from "@/client/lib/transcript-display";
 
 const props = withDefaults(
@@ -79,33 +80,13 @@ defineExpose({
               :show-timestamp="displayEntry.showTimestamp"
               :allow-session-popovers="props.allowSessionPopovers"
             >
-              <template v-if="displayEntry.detailsToggleBeforeReply" #before-assistant-reply>
-                <div class="transcript__details-toggle-row">
-                  <button
-                    type="button"
-                    class="transcript__details-toggle-btn"
-                    :aria-pressed="displayEntry.detailsToggleBeforeReply.expanded"
-                    @click="emit('toggleDetails', displayEntry.detailsToggleBeforeReply.sectionKey)"
-                  >
-                    {{
-                      displayEntry.detailsToggleBeforeReply.expanded
-                        ? "Collapse details"
-                        : "Show details"
-                    }}
-                  </button>
-                </div>
+              <template v-if="displayEntry.detailsToggle" #assistant-actions>
+                <TranscriptDetailsButton
+                  :expanded="displayEntry.detailsToggle.expanded"
+                  @toggle="emit('toggleDetails', displayEntry.detailsToggle.sectionKey)"
+                />
               </template>
             </ChatMessage>
-            <div v-else class="transcript__details-toggle-row">
-              <button
-                type="button"
-                class="transcript__details-toggle-btn"
-                :aria-pressed="displayEntry.expanded"
-                @click="emit('toggleDetails', displayEntry.sectionKey)"
-              >
-                {{ displayEntry.expanded ? "Collapse details" : "Show details" }}
-              </button>
-            </div>
           </div>
         </template>
       </Virtualizer>
@@ -123,33 +104,13 @@ defineExpose({
             :show-timestamp="displayEntry.showTimestamp"
             :allow-session-popovers="props.allowSessionPopovers"
           >
-            <template v-if="displayEntry.detailsToggleBeforeReply" #before-assistant-reply>
-              <div class="transcript__details-toggle-row">
-                <button
-                  type="button"
-                  class="transcript__details-toggle-btn"
-                  :aria-pressed="displayEntry.detailsToggleBeforeReply.expanded"
-                  @click="emit('toggleDetails', displayEntry.detailsToggleBeforeReply.sectionKey)"
-                >
-                  {{
-                    displayEntry.detailsToggleBeforeReply.expanded
-                      ? "Collapse details"
-                      : "Show details"
-                  }}
-                </button>
-              </div>
+            <template v-if="displayEntry.detailsToggle" #assistant-actions>
+              <TranscriptDetailsButton
+                :expanded="displayEntry.detailsToggle.expanded"
+                @toggle="emit('toggleDetails', displayEntry.detailsToggle.sectionKey)"
+              />
             </template>
           </ChatMessage>
-          <div v-else class="transcript__details-toggle-row">
-            <button
-              type="button"
-              class="transcript__details-toggle-btn"
-              :aria-pressed="displayEntry.expanded"
-              @click="emit('toggleDetails', displayEntry.sectionKey)"
-            >
-              {{ displayEntry.expanded ? "Collapse details" : "Show details" }}
-            </button>
-          </div>
         </div>
         <div ref="transcriptBottom" class="transcript__bottom" aria-hidden="true" />
       </div>
@@ -201,23 +162,6 @@ defineExpose({
   height: 1px;
 }
 
-.transcript__details-toggle-row {
-  display: flex;
-  justify-content: center;
-}
-
-.transcript__details-toggle-btn {
-  border: 1px solid color-mix(in srgb, var(--color-info) 30%, transparent);
-  border-radius: 0.5rem;
-  padding: 0.22rem 0.65rem;
-  font: inherit;
-  font-size: 0.88rem;
-  font-weight: 600;
-  cursor: pointer;
-  color: var(--color-info);
-  background: var(--color-bg-inline-code);
-}
-
 .transcript__jump-btn {
   border: 1px solid color-mix(in srgb, var(--color-info) 30%, transparent);
   border-radius: 0.5rem;
@@ -245,7 +189,6 @@ defineExpose({
     transform: translateX(-50%) translateY(-1px);
   }
 
-  .transcript__details-toggle-btn:hover,
   .transcript__jump-btn:hover {
     background: color-mix(in srgb, var(--color-bg-inline-code) 78%, var(--color-info));
   }

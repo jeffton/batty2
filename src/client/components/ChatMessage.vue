@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Check, Cog, Copy, FileDiff, PanelRightOpen } from "@lucide/vue";
+import { Cog, FileDiff, PanelRightOpen } from "@lucide/vue";
 import { computed, onBeforeUnmount, ref } from "vue";
 import { BATTY_RUNTIME_NOTICE_CUSTOM_TYPE } from "@/server/runtime-notices";
 import AgentTurnDiffPopover from "@/client/components/AgentTurnDiffPopover.vue";
 import AttachedFilesList from "@/client/components/AttachedFilesList.vue";
 import CodeBlock from "@/client/components/CodeBlock.vue";
 import MarkdownBlock from "@/client/components/MarkdownBlock.vue";
+import ReplyActions from "@/client/components/ReplyActions.vue";
 import SharedSitesList from "@/client/components/SharedSitesList.vue";
 import SubagentSessionPopover from "@/client/components/SubagentSessionPopover.vue";
 import ToolCallBlock from "@/client/components/ToolCallBlock.vue";
@@ -183,10 +184,7 @@ const lastReplySegmentIndex = computed(() =>
 const hasAssistantReplySegment = computed(() => replySegmentIndex.value >= 0);
 
 const showAssistantErrorBubble = computed(
-  () =>
-    props.message.role === "assistant" &&
-    props.message.turnPhase === "final" &&
-    !hasAssistantReplySegment.value,
+  () => props.message.role === "assistant" && !!assistantErrorText.value,
 );
 
 const messageTimestampLabel = computed(() => {
@@ -298,7 +296,7 @@ const assistantMarkdown = computed(() => {
     .join("\n");
 
   const siteMarkdown = sharedSites.value.map((site) => `[${site.name}](${site.url})`).join("\n");
-  const errorMarkdown = markdown.length === 0 ? assistantErrorText.value : undefined;
+  const errorMarkdown = assistantErrorText.value;
 
   return [markdown, attachmentMarkdown, siteMarkdown, errorMarkdown]
     .filter((section): section is string => typeof section === "string" && section.length > 0)
@@ -406,7 +404,6 @@ onBeforeUnmount(() => {
         v-for="(segment, segmentIndex) in assistantSegments"
         :key="`${props.message.id}-segment-${segmentIndex}`"
       >
-        <slot v-if="segmentIndex === replySegmentIndex" name="before-assistant-reply" />
         <div
           v-if="segmentIndex === replySegmentIndex && props.showTimestamp"
           class="message__timestamp"
@@ -422,17 +419,13 @@ onBeforeUnmount(() => {
             },
           ]"
         >
-          <button
+          <ReplyActions
             v-if="segmentIndex === replySegmentIndex"
-            type="button"
-            class="message__copy-button"
-            :aria-label="copied ? 'Copied reply markdown' : 'Copy reply as markdown'"
-            :title="copied ? 'Copied' : 'Copy reply as markdown'"
-            @click="copyAssistantMarkdown"
+            :copied="copied"
+            @copy="copyAssistantMarkdown"
           >
-            <Check v-if="copied" :size="17" />
-            <Copy v-else :size="17" />
-          </button>
+            <slot name="assistant-actions" />
+          </ReplyActions>
 
           <template
             v-for="(block, blockIndex) in segment.blocks"
@@ -489,11 +482,13 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <slot v-if="hasReplyArtifacts && !hasAssistantReplySegment" name="before-assistant-reply" />
       <div
         v-if="hasReplyArtifacts && !hasAssistantReplySegment"
         class="message__segment message__segment--bubble message__artifacts"
       >
+        <ReplyActions :copied="copied" @copy="copyAssistantMarkdown">
+          <slot name="assistant-actions" />
+        </ReplyActions>
         <AttachedFilesList v-if="attachedFiles.length > 0" :files="attachedFiles" />
         <SharedSitesList v-if="sharedSites.length > 0" :sites="sharedSites" />
         <button
@@ -514,19 +509,15 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="showAssistantErrorBubble && assistantErrorText">
-        <slot v-if="!hasReplyArtifacts" name="before-assistant-reply" />
         <div v-if="props.showTimestamp" class="message__timestamp">{{ messageTimestampLabel }}</div>
         <div class="message__segment message__segment--bubble message__segment--error">
-          <button
-            type="button"
-            class="message__copy-button"
-            :aria-label="copied ? 'Copied reply markdown' : 'Copy reply as markdown'"
-            :title="copied ? 'Copied' : 'Copy reply as markdown'"
-            @click="copyAssistantMarkdown"
+          <ReplyActions
+            v-if="!hasReplyArtifacts && !hasAssistantReplySegment"
+            :copied="copied"
+            @copy="copyAssistantMarkdown"
           >
-            <Check v-if="copied" :size="17" />
-            <Copy v-else :size="17" />
-          </button>
+            <slot name="assistant-actions" />
+          </ReplyActions>
           <div class="message__text">{{ assistantErrorText }}</div>
         </div>
       </template>
@@ -636,35 +627,6 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.message__copy-button {
-  float: right;
-  position: relative;
-  z-index: 2;
-  margin: -0.5rem -0.65rem 0.35rem 0.5rem;
-  padding: 0;
-  border: 0;
-  border-radius: 0.5rem;
-  background: transparent;
-  color: var(--color-text-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    background 80ms ease,
-    color 80ms ease;
-}
-
-@media (hover: hover) {
-  .message__copy-button:hover {
-    background: var(--color-bg-elevated);
-    color: var(--color-text);
-  }
-}
-
-.message__copy-button :deep(svg) {
-  display: block;
-}
-
 .message__segment {
   display: grid;
   gap: 0.45rem;
@@ -677,7 +639,7 @@ onBeforeUnmount(() => {
 
 .message__segment--bubble {
   --message-bg: var(--color-bg-panel);
-  display: block;
+  display: flow-root;
   position: relative;
   padding: 0.5rem 0.65rem 0.5rem 0;
   border-radius: 0 0.5rem 0.5rem 0;
@@ -762,7 +724,12 @@ onBeforeUnmount(() => {
 }
 
 .message__segment.message__artifacts {
+  display: flow-root;
   margin-top: 0;
+}
+
+.message__segment.message__artifacts > :not(.reply-actions) {
+  margin-top: 0.6rem;
 }
 
 .message__diff-button {

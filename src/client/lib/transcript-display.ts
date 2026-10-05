@@ -16,7 +16,7 @@ export type TranscriptDisplayEntry =
       kind: "message";
       entry: TranscriptMessageView;
       showTimestamp: boolean;
-      detailsToggleBeforeReply?: DetailsToggle;
+      detailsToggle?: DetailsToggle;
     }
   | ({ kind: "details-toggle" } & DetailsToggle);
 
@@ -35,14 +35,6 @@ function startsAnyTurn(entry: TranscriptMessageView): boolean {
   return entry.message.role === "user" || entry.message.role === "custom";
 }
 
-function isDetachedCronTurnStart(entry: TranscriptMessageView): boolean {
-  return entry.message.role === "custom" && Boolean(entry.message.data?.cron);
-}
-
-function startsExpandedTurn(entry: TranscriptMessageView): boolean {
-  return startsAnyTurn(entry) && !isDetachedCronTurnStart(entry);
-}
-
 function transcriptSections(entries: TranscriptMessageView[]): TranscriptSection[] {
   const starts: number[] = [];
   entries.forEach((entry, index) => {
@@ -56,21 +48,6 @@ function transcriptSections(entries: TranscriptMessageView[]): TranscriptSection
     startIndex,
     endIndex: starts[index + 1] ?? entries.length,
   }));
-}
-
-function latestExpandedSectionKey(
-  sections: TranscriptSection[],
-  entries: TranscriptMessageView[],
-): string | undefined {
-  const latestExpandedTurnIndex = entries.findLastIndex(startsExpandedTurn);
-  if (latestExpandedTurnIndex < 0) {
-    return undefined;
-  }
-
-  return sections.find(
-    (section) =>
-      latestExpandedTurnIndex >= section.startIndex && latestExpandedTurnIndex < section.endIndex,
-  )?.key;
 }
 
 function collapsedMessage(
@@ -133,7 +110,9 @@ function hasAssistantReply(entry: TranscriptMessageView | undefined): boolean {
   if (
     entry.message.stopReason === "error" ||
     entry.message.errorMessage?.trim() ||
-    (entry.message.fileChanges?.length ?? 0) > 0
+    (entry.message.fileChanges?.length ?? 0) > 0 ||
+    (entry.message.sentFiles?.length ?? 0) > 0 ||
+    (entry.message.sites?.length ?? 0) > 0
   ) {
     return true;
   }
@@ -159,8 +138,7 @@ export function buildTranscriptDisplayEntries(
   options: {
     alwaysShowDetails?: boolean;
     openDetailsSectionKey?: string | null;
-    collapsedDetailsSectionKey?: string | null;
-    showLatestDetailsToggle?: boolean;
+    isStreaming?: boolean;
   } = {},
 ): TranscriptDisplayResult {
   if (options.alwaysShowDetails) {
@@ -171,51 +149,40 @@ export function buildTranscriptDisplayEntries(
   }
 
   const sections = transcriptSections(entries);
-  const latestSectionKey = latestExpandedSectionKey(sections, entries);
+  const latestSectionKey = options.isStreaming ? sections.at(-1)?.key : undefined;
   const displayEntries: TranscriptDisplayEntry[] = [];
 
   for (const section of sections) {
-    const isLatestSection = section.key === latestSectionKey;
-    const isOpenSection = section.key === options.openDetailsSectionKey;
-    const canToggleSection = !isLatestSection || options.showLatestDetailsToggle === true;
-    const isCollapsedSection =
-      isLatestSection && section.key === options.collapsedDetailsSectionKey;
-    const isExpanded = (isLatestSection && !isCollapsedSection) || isOpenSection;
+    const isRunning = section.key === latestSectionKey;
     const sectionEntries = entries.slice(section.startIndex, section.endIndex);
-    const items = sectionEntries.map((entry) => {
-      const collapsed = collapsedMessage(entry, toolStatesByCallId);
+    const collapsedEntries = sectionEntries.map((entry) =>
+      collapsedMessage(entry, toolStatesByCallId),
+    );
+    const lastReplyIndex = collapsedEntries.findLastIndex(hasAssistantReply);
+    // Without a reply there is nowhere to put a control. Keep notices, failed
+    // tools and interrupted work accessible rather than silently dropping them.
+    const isExpanded =
+      isRunning || lastReplyIndex < 0 || section.key === options.openDetailsSectionKey;
+    const items = sectionEntries.map((entry, index) => {
+      const collapsed = collapsedEntries[index];
       return {
         visibleEntry: isExpanded ? entry : collapsed,
         hidesDetails: hidesExpandableDetails(entry, collapsed),
       };
     });
-    const firstHiddenIndex = canToggleSection ? items.findIndex((item) => item.hidesDetails) : -1;
-    let toggleAfterIndex = -1;
-    if (firstHiddenIndex >= 0) {
-      toggleAfterIndex = firstHiddenIndex;
-      for (let index = firstHiddenIndex + 1; index < items.length; index += 1) {
-        if (!items[index]!.hidesDetails) {
-          break;
-        }
-        toggleAfterIndex = index;
-      }
-    }
+    const canToggle = !isRunning && items.some((item) => item.hidesDetails);
 
     items.forEach((item, index) => {
-      const toggle = index === toggleAfterIndex ? detailsToggle(section, isExpanded) : undefined;
-      const placeToggleBeforeReply = toggle && hasAssistantReply(item.visibleEntry);
+      const toggle =
+        canToggle && index === lastReplyIndex ? detailsToggle(section, isExpanded) : undefined;
 
       if (item.visibleEntry) {
         displayEntries.push({
           kind: "message",
           entry: item.visibleEntry,
           showTimestamp: false,
-          ...(placeToggleBeforeReply ? { detailsToggleBeforeReply: toggle } : {}),
+          ...(toggle ? { detailsToggle: toggle } : {}),
         });
-      }
-
-      if (toggle && !placeToggleBeforeReply) {
-        displayEntries.push({ kind: "details-toggle", ...toggle });
       }
     });
   }

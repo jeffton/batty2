@@ -49,7 +49,6 @@ const props = withDefaults(
 const transcriptPane = ref<ChatTranscriptHandle | null>(null);
 const isTranscriptPinnedToBottom = ref(true);
 const openDetailsSectionKey = ref<string | null>(null);
-const collapsedDetailsSectionKey = ref<string | null>(null);
 let transcriptScrollElement: HTMLElement | null = null;
 let transcriptTopObserver: IntersectionObserver | null = null;
 let transcriptTailObserver: ResizeObserver | null = null;
@@ -148,8 +147,7 @@ const transcriptDisplay = computed(() =>
     {
       alwaysShowDetails: props.alwaysShowDetails,
       openDetailsSectionKey: openDetailsSectionKey.value,
-      collapsedDetailsSectionKey: collapsedDetailsSectionKey.value,
-      showLatestDetailsToggle: !props.session?.isStreaming,
+      isStreaming: props.session?.isStreaming,
     },
   ),
 );
@@ -609,14 +607,6 @@ async function initializeOpenedTranscript(sessionId: string): Promise<void> {
 }
 
 function toggleDetails(sectionKey: string): void {
-  if (sectionKey === latestExpandedSectionKey.value) {
-    openDetailsSectionKey.value = null;
-    collapsedDetailsSectionKey.value =
-      collapsedDetailsSectionKey.value === sectionKey ? null : sectionKey;
-    return;
-  }
-
-  collapsedDetailsSectionKey.value = null;
   openDetailsSectionKey.value = openDetailsSectionKey.value === sectionKey ? null : sectionKey;
 }
 
@@ -654,7 +644,6 @@ watch(
   ([sessionId, sectionKey], [previousSessionId, previousSectionKey]) => {
     if (sessionId !== previousSessionId || sectionKey !== previousSectionKey) {
       openDetailsSectionKey.value = null;
-      collapsedDetailsSectionKey.value = null;
     }
   },
 );
@@ -668,7 +657,6 @@ watch(
     () => props.loadingOlderMessages,
     () => transcriptEntries.value.length,
     () => openDetailsSectionKey.value,
-    () => collapsedDetailsSectionKey.value,
   ],
   async () => {
     await waitForTranscriptLayout();
@@ -681,7 +669,6 @@ watch(
   [
     () => props.session?.id,
     () => openDetailsSectionKey.value,
-    () => collapsedDetailsSectionKey.value,
     transcriptTailSignature,
     activeAssistantSignature,
     activeToolsSignature,
