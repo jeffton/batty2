@@ -19,6 +19,7 @@ import { Compile } from "typebox/compile";
 import type { McpService } from "./mcp-service";
 import type { CodemodeCall } from "../shared/types";
 import type { createCodemodeTasks } from "./codemode-tasks";
+import { MAIN_MEMORY_TOOLS } from "./main-memory-policy";
 
 export const CodemodeCalls = defineDoc<{
   calls: Record<string, { taskId: number; name: string; args: JsonValue }>;
@@ -54,6 +55,8 @@ export function createCodemodeTool(
         (tool) => tool.name !== "codemode",
       );
       const calls: CodemodeCall[] = [];
+      const ordinaryOutputs = new Set<string>();
+      let usedMainMemory = false;
       let ordinal = 0;
       const aborts: Promise<void>[] = [];
       const abortErrors: unknown[] = [];
@@ -86,6 +89,8 @@ export function createCodemodeTool(
                 }
               : { type: "string" },
         execute: async (input, { signal }) => {
+          // Inputs fixed before memory was read cannot be derived from that read.
+          const independentOfMainMemory = !usedMainMemory;
           const index = String(ordinal++);
           const started = performance.now();
           const call: CodemodeCall = {
@@ -174,6 +179,8 @@ export function createCodemodeTool(
                 ?.filter((block) => block.type === "text")
                 .map((block) => block.text)
                 .join("\n") ?? "";
+            if (MAIN_MEMORY_TOOLS.has(tool.name)) usedMainMemory = true;
+            else if (independentOfMainMemory) ordinaryOutputs.add(text);
             if (result.isError) throw new Error(text);
             call.status = "ok";
             if (structured !== null) return structured;
@@ -258,6 +265,9 @@ export function createCodemodeTool(
         if (!result.ok)
           content.push({ type: "text", text: result.error.stack ?? result.error.message });
         let budget = (parsed.options.maxOutputTokens ?? 10000) * 4;
+        const safeBlocks = content.map(
+          (block) => block.type === "text" && ordinaryOutputs.has(block.text),
+        );
         const limited = content.map((block) => {
           if (block.type !== "text") return block;
           const text = block.text.slice(0, Math.max(0, budget));
@@ -274,6 +284,14 @@ export function createCodemodeTool(
           details: {
             calls,
             sandboxCalls: result.calls,
+            // Keep independently emitted ordinary tool results in cross-workspace
+            // copies. Other output from a memory-reading script may derive from
+            // main memory, even when the script transforms or dynamically calls it.
+            ...(usedMainMemory
+              ? {
+                  mainMemoryFreeContent: limited.filter((_, index) => safeBlocks[index]),
+                }
+              : {}),
             ...(sentFiles.length ? { sentFiles } : {}),
             ...(sites.length ? { sites } : {}),
           } as unknown as JsonValue,

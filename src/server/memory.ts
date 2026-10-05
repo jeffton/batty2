@@ -25,6 +25,8 @@ import {
 } from "@earendil-works/pi-durable";
 
 import { decodeRuntimeNotice } from "./runtime-notices";
+import { WorkerDoc } from "./orchestration";
+import { MAIN_MEMORY_TOOLS, isMainMemoryView, withoutMainMemory } from "./main-memory-policy";
 
 export const NODE_BYTES = 512;
 export const VIEW_BYTES = 128_000;
@@ -245,12 +247,13 @@ user is, how their files are organized and how they want work done.
 Use subagents when they are a natural fit for focused or parallel work.
 
 Main turns start with a prepared main-memory view, followed by the user's
-new message. Subagents and detached cron workers have their own execution
-context, not an automatic main-memory view. Copied parent context is a
-snapshot, and nested workers copy their parent's context, not main's.
-For main-memory access on demand, call memory_overview(), then use its
-id+n lines with zoom(id, n) and date(id). These tools always address main
-memory, not the worker's own context. Summaries keep little of tool
+new message. Subagents and detached cron workers targeting workspace roy
+receive the prepared main-memory overview automatically, including fresh
+and nested workers. They can navigate it with zoom(id, n) and date(id).
+Workers targeting other workspaces have no main-memory overview or navigation
+tools. Explicitly copied parent context is a fixed snapshot of ordinary task
+context; main-memory content is excluded for non-Roy targets.
+Navigation tools always address main memory, not the worker's own context. Summaries keep little of tool
 output, so say in your reply what you learned that will matter later.
 Messages the user sends while you work reach you between tool calls.
 
@@ -636,43 +639,31 @@ export function createMemory(config: MemoryConfig, models: Models) {
     sections: [section("memory", () => MEMORY_PROMPT)],
     tools: [
       defineTool({
-        name: "memory_overview",
-        description:
-          "Fetch the current summarized OptChat overview of main memory (not this worker's context). Returns id+n lines usable with zoom and date; does not copy full history or wait for pending summaries.",
-        parameters: Type.Object({}),
-        replay: "safe",
-        outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
-        execute: async (_, __, context) => {
-          await load(context);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Main memory (OptChat overview)\n${renderView(index.parts, nodes)}`,
-              },
-            ],
-          };
-        },
-      }),
-      defineTool({
         name: "zoom",
         description:
-          "Open main-memory line id+n from memory_overview into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
+          "Open prepared main-memory line id+n into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
         parameters: Type.Object({ id: Type.Integer(), n: Type.Integer() }),
         replay: "safe",
         outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
-        execute: async ({ id, n }, _, context) => ({
-          content: [{ type: "text", text: await zoom(id, n, context) }],
-        }),
+        execute: async ({ id, n }, api, context) => {
+          const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
+          if (api.conversationId !== main.id && worker?.workspaceId !== "roy")
+            throw new Error("Main memory is available only to Roy workers");
+          return { content: [{ type: "text", text: await zoom(id, n, context) }] };
+        },
       }),
       defineTool({
         name: "date",
-        description: "The date and time of main-memory message id (from memory_overview or zoom).",
+        description:
+          "The date and time of main-memory message id (from the prepared overview or zoom).",
         parameters: Type.Object({ id: Type.Integer() }),
         replay: "safe",
-        execute: async ({ id }, _, context) => ({
-          content: [{ type: "text", text: await date(id, context) }],
-        }),
+        execute: async ({ id }, api, context) => {
+          const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
+          if (api.conversationId !== main.id && worker?.workspaceId !== "roy")
+            throw new Error("Main memory is available only to Roy workers");
+          return { content: [{ type: "text", text: await date(id, context) }] };
+        },
       }),
     ],
     hooks: [
@@ -681,7 +672,46 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }),
       hook(GenerationTask, {
         beforeRequest: async ({ messages }, api, context) => {
-          if (api.conversationId !== main.id) return;
+          if (api.conversationId !== main.id) {
+            const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
+            if (worker?.workspaceId !== "roy") {
+              const isolated = withoutMainMemory(messages);
+              const system = getCurrentSystemMessage(messages);
+              return {
+                messages: [
+                  ...(system
+                    ? [
+                        {
+                          ...system,
+                          toolsAdded: system.toolsAdded?.filter(
+                            (tool) => !MAIN_MEMORY_TOOLS.has(tool.name),
+                          ),
+                        },
+                      ]
+                    : []),
+                  ...isolated,
+                ],
+              };
+            }
+            if (messages.some(isMainMemoryView)) return;
+            await load(context);
+            const active = await harness.snapshot(LiveDoc, main.id, context);
+            const runId = active?.run?.inputs[0];
+            const packet = runId
+              ? await harness.snapshot(Packets, main.id, String(runId), context)
+              : undefined;
+            return {
+              messages: [
+                ...messages.filter((message) => message.role === "system"),
+                {
+                  role: "user",
+                  content: packet?.view ?? renderView(index.parts, nodes),
+                  timestamp: 0,
+                },
+                ...messages.filter((message) => message.role !== "system"),
+              ],
+            };
+          }
           try {
             const live = (await api.snapshot(LiveDoc, main.id, context))!;
             const runId = live.run!.inputs[0]!;

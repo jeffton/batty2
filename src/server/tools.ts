@@ -40,6 +40,8 @@ import { createBattyReadTool } from "./read-tool";
 import { createCodemodeTasks } from "./codemode-tasks";
 import { cancelPersistentBashJobs } from "./durable-bash-cancel";
 import { createBashAbortWatcher } from "./tools-abort-watcher";
+import { WorkerDoc } from "./orchestration";
+import { MAIN_MEMORY_TOOLS } from "./main-memory-policy";
 
 export async function toolCwd(api: ToolExecutionApi, ctx: Context): Promise<string> {
   const cwd = api.env?.cwd ?? (await api.agent(ctx)).cwd;
@@ -190,7 +192,13 @@ export async function createTools(
         ...(await mcp.tools()),
       ].map((tool) => [tool.name, tool]),
     );
-    return [...all.values()];
+    const worker = await api.snapshot(WorkerDoc, api.conversationId, ctx);
+    const isMain = harness && api.conversationId === (await harness.root(ctx)).id;
+    return [...all.values()].filter(
+      (tool) =>
+        tool.name !== "memory_overview" &&
+        (isMain || worker?.workspaceId === "roy" || !MAIN_MEMORY_TOOLS.has(tool.name)),
+    );
   };
   const nestedTask = createCodemodeTasks(resolveTools, mcp, jobsDir);
   local.push(

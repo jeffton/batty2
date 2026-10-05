@@ -25,6 +25,7 @@ import { createOrchestration, OrchestrationDoc } from "./orchestration";
 import { createTools } from "./tools";
 import { persistentBashOperations } from "./durable-bash";
 import { stateDirPath } from "./options";
+import { withoutMainMemory } from "./main-memory-policy";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -108,6 +109,36 @@ async function fixture(persistent = false) {
 }
 
 describe("durable tool bridge", () => {
+  it("isolates dynamically invoked main-memory output while retaining ordinary mixed-batch results", async () => {
+    const { directory, tools, run } = await fixture();
+    await fs.writeFile(path.join(directory, "task.txt"), "ordinary task result");
+    tools.registerTools([
+      {
+        name: "zoom",
+        description: "main memory",
+        parameters: Type.Object({}),
+        replay: "safe",
+        execute: async () => ({ content: [{ type: "text", text: "private decision" }] }),
+      },
+    ]);
+    const result = await run(
+      'const key = "zo" + "om"; const results = await Promise.all([tools.read({path: "task.txt"}), tools[key]({})]); for (const result of results) text(result);',
+    );
+    const isolated = withoutMainMemory([result]);
+    expect(JSON.stringify(isolated)).not.toContain("private decision");
+    expect(JSON.stringify(isolated)).toContain("ordinary task result");
+    const derived = await run(
+      'const secret = await tools.zoom({}); text(await tools.bash({command: "printf \'" + secret + "\'"}));',
+    );
+    expect(withoutMainMemory([derived])).toEqual([]);
+    await fs.writeFile(path.join(directory, "task.txt"), "ordinary".repeat(100));
+    const truncated = await run(
+      '// @options: {"max_output_tokens": 10}\nconst results = await Promise.all([tools.read({path: "task.txt"}), tools.zoom({})]); for (const result of results) text(result);',
+    );
+    const copied = withoutMainMemory([truncated]);
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatchObject({ content: [{ type: "text", text: "ordinary".repeat(5) }] });
+  });
   it("preserves nested faults and returned errors alongside successful batched calls", async () => {
     const { directory, tools, run } = await fixture();
     await fs.writeFile(path.join(directory, "present.txt"), "hello");

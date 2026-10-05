@@ -35,9 +35,9 @@ export function decodeRuntimeNotice(content: unknown): RuntimeNotice | undefined
 
 function contextInstructions(mode: PreviousContextMode = false): string {
   return mode === "chat-only"
-    ? "You received a chat-only snapshot of the main context; tool calls, tool results and thinking were omitted."
+    ? "You received a chat-only snapshot of the parent's context (main-memory content is excluded for non-Roy targets); tool calls, tool results and thinking were omitted."
     : mode === true
-      ? "You received a fixed snapshot of the main's prepared context. It does not update as main continues."
+      ? "You received a fixed snapshot of the parent's prepared context (main-memory content is excluded for non-Roy targets). It does not update as main continues."
       : "You start fresh with workspace system instructions and the assigned prompt.";
 }
 

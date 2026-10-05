@@ -14,7 +14,7 @@ import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durab
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createMemory, MemoryIndexDoc } from "./memory";
 import { createTools } from "./tools";
-import { createOrchestration, OrchestrationDoc } from "./orchestration";
+import { createOrchestration, OrchestrationDoc, WorkerDoc } from "./orchestration";
 
 async function until(check: () => Promise<boolean>) {
   for (let i = 0; i < 1000; i++) {
@@ -24,9 +24,21 @@ async function until(check: () => Promise<boolean>) {
   throw new Error("Worker did not finish");
 }
 
-test.each(["fresh", "nested", "cron"])(
-  "%s worker fetches main catalog and zooms through codemode without inherited history",
-  async (kind) => {
+test.each([
+  { kind: "fresh", target: "roy", copy: false },
+  { kind: "nested", target: "roy", copy: false },
+  { kind: "nested", target: "roy", copy: true, parent: "other" },
+  { kind: "cron", target: "roy", copy: false },
+  { kind: "fresh", target: "roy", copy: true },
+  { kind: "fresh", target: "roy", copy: "chat-only" },
+  { kind: "fresh", target: "other", copy: true },
+  { kind: "nested", target: "other", copy: true },
+  { kind: "cron", target: "other", copy: "chat-only" },
+] as const)(
+  "$kind worker in $target (copy=$copy) receives only permitted main memory",
+  async (scenario) => {
+    const { kind, target, copy } = scenario;
+    const parent = scenario.parent ?? "roy";
     const directory = await mkdtemp(join(tmpdir(), "batty-overview-"));
     const models = createModels();
     const faux = fauxProvider({ tokensPerSecond: 100_000 });
@@ -45,9 +57,17 @@ test.each(["fresh", "nested", "cron"])(
     const orchestration = createOrchestration({
       workspaces: [
         {
-          id: "test",
+          id: "roy",
           path: directory,
           label: "Test",
+          kind: "workspace",
+          isPinned: false,
+          isAssistant: false,
+        },
+        {
+          id: "other",
+          path: join(directory, "other"),
+          label: "Other",
           kind: "workspace",
           isPinned: false,
           isAssistant: false,
@@ -86,10 +106,11 @@ test.each(["fresh", "nested", "cron"])(
       await memory.prepare();
       const inspected: number[] = [];
       let navigated = 0;
-      const code = `const overview = await tools.memory_overview({});
-text(overview);
-const line = overview.match(/(\\d+)\\+(\\d+)\\|/);
-let id = Number(line[1]), n = Number(line[2]);
+      const overview = await memory.prepare();
+      const line = overview.match(/(\d+)\+(\d+)\|/)!;
+      const code = `text(await searchTools("memory_overview"));
+text(ALL_TOOLS);
+let id = ${Number(line[1])}, n = ${Number(line[2])};
 while (n > 1) { text(await tools.zoom({id, n})); n /= 2; }
 text(await tools.zoom({id, n: 1}));
 text(await tools.date({id}));`;
@@ -105,6 +126,8 @@ text(await tools.date({id}));`;
                     action: "run",
                     prompt: kind === "nested" ? "launch nested catalog" : "inspect catalog",
                     async: true,
+                    workspaceId: kind === "nested" ? parent : target,
+                    includePreviousContext: copy,
                   }),
                 ],
                 { stopReason: "toolUse" },
@@ -116,28 +139,50 @@ text(await tools.date({id}));`;
                     action: "run",
                     prompt: "inspect catalog",
                     async: true,
+                    workspaceId: target,
+                    includePreviousContext: copy,
                   }),
                 ],
                 { stopReason: "toolUse" },
               );
             if (input.includes("inspect catalog")) {
               expect(JSON.stringify(request.messages)).not.toContain(secret);
-              expect(
-                JSON.stringify(request.messages.filter((message) => message.role !== "system")),
-              ).not.toContain("<chat>");
+              const text = JSON.stringify(
+                request.messages.filter((message) => message.role !== "system"),
+              );
+              expect(text.match(/<chat>/g) ?? []).toHaveLength(target === "roy" ? 1 : 0);
+              const system = request.messages.findLast((message) => message.role === "system");
+              const names = system?.toolsAdded?.map((tool) => tool.name) ?? [];
+              expect(names).not.toContain("memory_overview");
+              expect(names.includes("zoom")).toBe(target === "roy");
+              expect(names.includes("date")).toBe(target === "roy");
               inspected.push(request.messages.length);
-              return fauxAssistantMessage([fauxToolCall("codemode", { code })], {
-                stopReason: "toolUse",
-              });
+              return fauxAssistantMessage(
+                [
+                  fauxToolCall("codemode", {
+                    code:
+                      target === "roy"
+                        ? code
+                        : "text(ALL_TOOLS); text(await searchTools('main memory')); try { text(await describeTool('zoom')); } catch (error) { text(String(error)); }",
+                  }),
+                ],
+                {
+                  stopReason: "toolUse",
+                },
+              );
             }
           }
           if (last.role === "toolResult" && last.toolName === "codemode") {
             const output = JSON.stringify(last.content);
             expect(last.isError).toBeFalsy();
-            expect(output).toContain(`Main memory (OptChat overview)`);
-            expect(output).toContain("user: archived decision about the secret");
-            expect(output).toContain(`0:${secret}`);
-            expect(output).toContain("1970-01-01T00:00:00.001Z");
+            if (target === "roy") {
+              expect(output).toContain(`0:${secret}`);
+              expect(output).toContain("1970-01-01T00:00:00.001Z");
+            } else {
+              expect(output).not.toContain('"name":"zoom"');
+              expect(output).not.toContain('"name":"date"');
+              expect(output).not.toContain(secret);
+            }
             navigated++;
           }
           return fauxAssistantMessage([fauxText("NO_REPLY")]);
@@ -145,9 +190,9 @@ text(await tools.date({id}));`;
       );
       if (kind === "cron") {
         const job = await orchestration.addJob({
-          workspaceId: "test",
+          workspaceId: target,
           prompt: "inspect catalog",
-          session: { kind: "main-detached" },
+          session: { kind: "main-detached", includePreviousContext: copy },
           schedule: { kind: "at", in: "1h" },
         });
         await main.commit(async (tx) => {
@@ -175,7 +220,7 @@ text(await tools.date({id}));`;
   15000,
 );
 
-test("overview reads the built catalog without waiting for or starting pending compression", async () => {
+test("automatic worker overview uses the built catalog without waiting for pending compression", async () => {
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
@@ -231,12 +276,13 @@ test("overview reads the built catalog without waiting for or starting pending c
     await entered;
     const before = await harness.snapshot(MemoryIndexDoc, main.id, context);
     const worker = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+    await worker.commit(async (tx) => {
+      (await tx.doc(WorkerDoc, worker.id)).workspaceId = "roy";
+    }, context);
     let overview = "";
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall("memory_overview", {})], { stopReason: "toolUse" }),
       (request) => {
-        const result = request.messages.findLast((message) => message.role === "toolResult")!;
-        overview = JSON.stringify(result.content);
+        overview = JSON.stringify(request.messages);
         return fauxAssistantMessage([fauxText("done")]);
       },
     ]);

@@ -40,6 +40,8 @@ import {
   type RuntimeNotice,
 } from "./runtime-notices.js";
 
+import { MAIN_MEMORY_TOOLS, withoutMainMemory } from "./main-memory-policy.js";
+
 const context = BACKGROUND_CONTEXT;
 export type ContextMode = boolean | "chat-only";
 export type ContextProvider = (
@@ -267,6 +269,26 @@ function deliveryNotice(input: DeliveryInput): RuntimeNotice {
   };
 }
 
+function workerTools(agent: Agent, workspaceId: string): string[] {
+  const memoryTools =
+    workspaceId === "roy"
+      ? agent.extensions.flatMap((extension) =>
+          extension.name === "batty-optchat" ? (extension.tools ?? []) : [],
+        )
+      : [];
+  return [
+    ...new Set(
+      [...agent.tools, ...memoryTools]
+        .filter(
+          (tool) =>
+            tool.name !== "memory_overview" &&
+            (workspaceId === "roy" || !MAIN_MEMORY_TOOLS.has(tool.name)),
+        )
+        .map((tool) => tool.name),
+    ),
+  ];
+}
+
 type DeliveryState =
   | { phase: "order" }
   | { phase: "deliver"; retryAt?: number }
@@ -282,11 +304,13 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const preparedContext = async (
     parentId: ConversationId,
     mode: ContextMode,
+    workspaceId: string,
   ): Promise<readonly Message[]> => {
     if (mode === false) return [];
     if (!contextFor)
       throw new Error("Context copying requires orchestration.setContextProvider(fn)");
-    const messages = await contextFor(parentId, mode);
+    const copied = await contextFor(parentId, mode);
+    const messages = workspaceId === "roy" ? copied : withoutMainMemory(copied);
     if (mode !== "chat-only") return messages;
     return messages.flatMap<Message>((message) => {
       if (message.role === "user") return [message];
@@ -438,6 +462,9 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           }
         } else {
           let admitted = false;
+          const childAgent = await (await harness.conversation(task.input.childId, ctx))!.agent(
+            ctx,
+          );
           await runtime.commit(async (tx) => {
             const existing = await tx.submissionByRequest(
               task.input.childId,
@@ -450,6 +477,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
                 (await tx.doc(OrchestrationDoc)).workers[task.input.workerId]!.workspaceId =
                   task.input.workspaceId;
                 (await tx.doc(WorkerDoc, task.input.childId)).workspaceId = task.input.workspaceId;
+                (await tx.doc(AgentDoc, task.input.childId)).tools = workerTools(
+                  childAgent,
+                  task.input.workspaceId,
+                );
               }
             }
           }, ctx);
@@ -665,7 +696,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       ...change,
       cwd: ws.path,
     });
-    (await tx.doc(AgentDoc, child.id)).tools = parentAgent.tools.map((tool) => tool.name);
+    (await tx.doc(AgentDoc, child.id)).tools = workerTools(parentAgent, ws.id);
     for (const message of prefix) {
       const kind =
         message.role === "system"
@@ -814,7 +845,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const inherited = await api.agent(ctx);
       const prefix =
         args.action === "run" && !existingCall
-          ? await preparedContext(api.conversationId, args.includePreviousContext ?? false)
+          ? await preparedContext(api.conversationId, args.includePreviousContext ?? false, ws.id)
           : [];
       const isAsync =
         api.conversationId === state!.mainId || args.action === "queue" || args.async === true;
@@ -932,7 +963,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         const inline = job.session.kind === "daily-inline" || job.session.kind === "main-inline";
         const prefix = inline
           ? []
-          : await preparedContext(main.id, job.session.includePreviousContext ?? false);
+          : await preparedContext(main.id, job.session.includePreviousContext ?? false, ws.id);
         await main.commit(async (tx) => {
           const doc = await tx.doc(OrchestrationDoc);
           const current = doc.jobs[job.id];
