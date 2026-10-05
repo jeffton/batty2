@@ -6,7 +6,6 @@ const emit = defineEmits<{ copy: [] }>();
 
 <template>
   <div class="reply-actions">
-    <slot />
     <button
       type="button"
       :aria-label="copied ? 'Copied reply markdown' : 'Copy reply as markdown'"
@@ -16,6 +15,7 @@ const emit = defineEmits<{ copy: [] }>();
       <Check v-if="copied" :size="22" />
       <Copy v-else :size="22" />
     </button>
+    <slot />
   </div>
 </template>
 
@@ -25,7 +25,7 @@ const emit = defineEmits<{ copy: [] }>();
   position: relative;
   z-index: 2;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   margin: -0.5rem -0.65rem 0.35rem 0.5rem;
 }
 

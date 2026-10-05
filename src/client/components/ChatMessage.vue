@@ -581,7 +581,7 @@ onBeforeUnmount(() => {
 }
 
 .message > *,
-.message__segment--bubble > * {
+.message__segment--bubble > :not(.reply-actions) {
   position: relative;
   z-index: 1;
 }
