@@ -438,7 +438,7 @@ test("inline workspace context survives a steer and subsequent tool round", asyn
   expect((await main.agent(context)).cwd).toBe("/tmp");
 }, 15000);
 
-test("workers spawned by a worker still deliver async replies to canonical main", async () => {
+test("workers spawned by a worker deliver async replies only to their parent", async () => {
   const { faux, orchestration, open } = await fixture();
   const { harness, main } = await open();
   const call = (prompt: string) =>
@@ -466,15 +466,15 @@ test("workers spawned by a worker still deliver async replies to canonical main"
   const state = (await harness.snapshot(OrchestrationDoc, context))!;
   expect(Object.values(state.workers).some((w) => w.parentId !== main.id)).toBe(true);
   const mainHistory = JSON.stringify((await main.context(context)).messages);
-  expect(mainHistory).toContain("leaf answer");
+  expect(mainHistory).not.toContain("leaf answer");
   const outer = Object.values(state.workers).find((w) => w.parentId === main.id)!;
   const outerHistory = JSON.stringify(
     (await (await harness.conversation(outer.id, context))!.context(context)).messages,
   );
-  expect(outerHistory).not.toContain("leaf answer");
+  expect(outerHistory).toContain("leaf answer");
 }, 15000);
 
-test.each(["complete", "restart"])(
+test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
   "worker await preserves its submission and target across %s",
   async (mode) => {
     const { faux, orchestration, open, registry } = await fixture();
@@ -536,7 +536,17 @@ test.each(["complete", "restart"])(
         if (last.role === "user" && text.includes("launch await test"))
           return call({ action: "run", async: true, prompt: "outer implementation" });
         if (last.role === "user" && text.includes("outer implementation"))
-          return call({ action: "run", async: true, prompt: "nested review" });
+          return call({
+            action: "run",
+            async: true,
+            prompt: mode === "cron-resume" ? "preflight review" : "nested review",
+          });
+        if (last.role === "user" && text.includes("preflight review"))
+          return fauxAssistantMessage([fauxText("preflight complete")]);
+        if (last.role === "user" && text.includes("preflight complete")) {
+          const sessionId = text.match(/subagent (\d+) result/)![1];
+          return call({ action: "resume", async: true, sessionId, prompt: "nested review" });
+        }
         if (last.role === "user" && text.includes("nested review"))
           return fauxAssistantMessage([fauxToolCall("review_gate", {})], { stopReason: "toolUse" });
         if (last.role === "toolResult" && text.includes("Started. Session ID:")) {
@@ -545,18 +555,30 @@ test.each(["complete", "restart"])(
         }
         if (last.role === "toolResult" && last.toolName === "review_gate")
           return fauxAssistantMessage([fauxText("review findings")]);
-        if (last.role === "toolResult" && text.includes("review findings"))
+        if (last.role === "user" && text.includes("review findings"))
           return fauxAssistantMessage([fauxText("implementation final report after review")]);
         return fauxAssistantMessage([fauxText("noted")]);
       }),
     );
     try {
-      const submission = await main.submit(
-        { type: "input", content: "launch await test" },
-        context,
-      );
-      // Main await still yields, even though the nested review remains blocked.
-      await submission.wait(context);
+      if (mode.startsWith("cron-")) {
+        const job = await orchestration.addJob({
+          prompt: "outer implementation",
+          session: { kind: "daily-detached" },
+          schedule: { kind: "at", in: "1h" },
+        });
+        await main.commit(async (tx) => {
+          (await tx.doc(OrchestrationDoc)).jobs[job.id]!.nextAt = Date.now() - 1;
+        }, context);
+        await orchestration.tick();
+      } else {
+        const submission = await main.submit(
+          { type: "input", content: "launch await test" },
+          context,
+        );
+        // Main await still yields, even though the nested review remains blocked.
+        await submission.wait(context);
+      }
       await until(async () => {
         const state = (await harness.snapshot(OrchestrationDoc, context))!;
         const outer = Object.values(state.workers).find((w) => w.parentId === main.id);
@@ -571,7 +593,7 @@ test.each(["complete", "restart"])(
         }
         return false;
       });
-      if (mode === "restart") {
+      if (mode.endsWith("restart")) {
         // Queue/resume replaces active with a later delivery. Recovery must keep
         // the target recorded by the already-running await, not follow this tail.
         await main.commit(async (tx) => {
@@ -601,12 +623,22 @@ test.each(["complete", "restart"])(
       )
       .join("\n");
     expect(history).toContain(
-      `[subagent ${outer.id} result]\nimplementation final report after review`,
+      `[${mode.startsWith("cron-") ? "cron" : "subagent"} ${outer.id} result]\nimplementation final report after review`,
     );
-    expect(history).toContain("review findings");
+    expect(history).not.toContain("review findings");
     expect(history).not.toContain("(no output)");
     const outerMessages = (await (await harness.conversation(outer.id, context))!.context(context))
       .messages;
+    expect(
+      outerMessages.filter(
+        (m) => m.role === "user" && JSON.stringify(m.content).includes("review findings"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      outerMessages.filter(
+        (m) => m.role === "toolResult" && JSON.stringify(m.content).includes("review findings"),
+      ),
+    ).toHaveLength(0);
     expect(outerMessages.findLast((m) => m.role === "assistant")).toMatchObject({
       content: [{ type: "text", text: "implementation final report after review" }],
     });

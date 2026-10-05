@@ -7,7 +7,8 @@ One permanent assistant chat. Workspaces are execution scopes for subagents and 
 - Pi Durable 1.0.2 runs the main conversation, linear workers, queued input, and durable report delivery in SQLite.
 - OptChat keeps original entries forever and builds immutable binary summaries. Each main run receives a frozen history view plus its own tool loop. `zoom` retrieves uncompressed non-thought text or child summaries; `date` retrieves a leaf's timestamp. Full message metadata, images, and reasoning remain in the permanent archive.
 - Pi Durable automatically compacts subagent and cron worker context while retaining original history; main-inline cron stays on OptChat, and main declines native compaction.
-- Subagents support synchronous and asynchronous run, await, queue, resume, steer, and stop. Background results reach the main thread, including work started by another worker.
+- Main-started subagents always run asynchronously. Worker-started helpers support synchronous calls and parallel asynchronous run, await, queue, resume, steer, and stop. Async results report to the spawning parent: steering when busy, a new turn when idle. Worker await waits durably and acknowledges async completion without repeating the report; synchronous calls return the result directly. Detached cron helper reports stay within the cron worker; only its final result reaches main.
+- Breaking change: nested async reports target their spawning parent instead of main, and worker await of async work returns a completion acknowledgement rather than the result text.
 - Cron supports fresh workers, main-inline execution, and detached workers. `daily-inline` and `daily-detached` are accepted mode names; they target the permanent main thread rather than daily sessions. Fresh-worker cron results also reach main.
 - Batty's thread rendering, file tools, browser, web search, sites, attachments, passkeys, MCP, and QuickJS codemode are reused selectively. There is no executor.
 

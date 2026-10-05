@@ -51,7 +51,7 @@ export function buildSubagentRuntimeNotice(
     text: [
       "You are a subagent carrying out an assigned task, not the main assistant. Work only on this task in this execution scope.",
       contextInstructions(includePreviousContext),
-      "Detailed work and tool calls stay here. Asynchronous final responses and errors go to the canonical main thread; synchronous results return through the calling agent's tool call. Make your final response self-contained.",
+      "Detailed work and tool calls stay here. Asynchronous final responses and errors go to your spawning parent; synchronous results return through the calling agent's tool call. Make your final response self-contained.",
       "Assigned task:",
       prompt.trim(),
     ].join("\n\n"),

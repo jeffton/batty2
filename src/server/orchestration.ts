@@ -125,7 +125,7 @@ export type CronRun = {
   finishedAt?: number;
   output?: string;
 };
-/** One session-wide authority; workers never acquire a separate result mailbox. */
+/** Session-wide worker registry; subagent results belong to their spawning parent. */
 export const OrchestrationDoc = defineDoc<{
   mainId?: ConversationId;
   inlineContext?: InlineContext;
@@ -504,7 +504,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       report: async (task, runtime, ctx) => {
         const { text, send, failed } = task.state.checkpoint;
         if (send) {
-          const target = (await runtime.conversation(task.input.mainId, ctx))!;
+          const state = await runtime.snapshot(OrchestrationDoc, ctx);
+          const targetId = task.input.runId
+            ? task.input.mainId
+            : state!.workers[task.input.workerId]!.parentId;
+          const target = (await runtime.conversation(targetId, ctx))!;
           await target.submit(
             {
               type: "input",
@@ -644,7 +648,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const subagent = defineTool({
     name: "subagent",
     description:
-      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async; results steer a busy main. Await yields main turns; workers durably wait and receive the result.",
+      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async. Async results steer their spawning parent when busy or start a turn when idle. Await yields main turns; workers durably wait. Async await acknowledges completion; the result arrives only as a report.",
     replay: "safe",
     parameters: Type.Object({
       action: Type.Union(
@@ -676,9 +680,13 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         // here would settle that delivery with this tool call, not a final report.
         const target = await api.memo("batty.await", worker!.active!, ctx);
         const settled = await api.waitForTask(target, ctx);
+        // Async delivery submits its report before becoming terminal. Steering is
+        // admitted after this tool round, so await must not repeat the result.
         return reply(
           settled.state.outcome.status === "completed"
-            ? settled.state.outcome.result
+            ? (settled.input as unknown as DeliveryInput).report
+              ? `Subagent finished. Session ID: ${workerId}. Result delivered to parent.`
+              : settled.state.outcome.result
             : `Subagent ${settled.state.outcome.status}`,
         );
       }
@@ -1077,7 +1085,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const cron = defineTool({
     name: "cron",
     description:
-      "Manage durable scheduled turns. daily-inline/main-inline run in main without a daily reset; daily-detached/main-detached use fresh workers. Every output reaches main.",
+      "Manage durable scheduled turns. daily-inline/main-inline run in main without a daily reset; daily-detached/main-detached use fresh workers. Final cron outputs reach main; helper reports stay with their spawning parent.",
     replay: "unsafe",
     parameters: Type.Object({
       action: Type.String(),
