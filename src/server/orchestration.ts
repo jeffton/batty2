@@ -28,6 +28,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Cron } from "croner";
 import type { WorkspaceInfo } from "../shared/types.js";
+import { NO_REPLY_SENTINEL } from "../shared/agent-notification.js";
 import type { AppConfig } from "./config.js";
 import { listWorkspaces } from "./workspaces.js";
 import {
@@ -506,7 +507,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       report: async (task, runtime, ctx) => {
         const { text, send, failed } = task.state.checkpoint;
         const state = await runtime.snapshot(OrchestrationDoc, ctx);
-        if (send && !state?.joins?.[String(task.id)]) {
+        // Suppress only successful cron reports, before creating any main input or notice.
+        // Keep the task result and run history intact, including for already-checkpointed reports.
+        const silentCron = task.input.runId && !failed && text.trim() === NO_REPLY_SENTINEL;
+        if (send && !silentCron && !state?.joins?.[String(task.id)]) {
           const targetId = task.input.runId
             ? task.input.mainId
             : state!.workers[task.input.workerId]!.parentId;
