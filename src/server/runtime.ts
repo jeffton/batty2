@@ -189,9 +189,7 @@ export class Runtime {
     const resources = createResources(config);
     registry.install(resources.extension);
     const baseExtensions = registry.snapshot().installed();
-    tools.bindRegistry(registry);
     const workspaces = await listWorkspaces(config);
-    await tools.installMcpScopes(workspaces.map((workspace) => workspace.path));
     const database = await openNodeSqliteDatabase(path.join(dir, "runtime.sqlite"));
     await database.exec("PRAGMA synchronous = FULL");
     const storage = await SqliteStorage.open(database);
@@ -236,8 +234,6 @@ export class Runtime {
       );
     }
     tools.bindHarness(harness);
-    await tools.syncConversation(main, context);
-    orchestration.setPrepareAgent((cwd, agent, ctx) => tools.prepareAgent(cwd, agent, ctx));
     orchestration.setContextProvider((parentId, mode) => memory.contextFor(parentId, mode));
     tools.registerTools([
       ...(orchestration.extension.tools ?? []),

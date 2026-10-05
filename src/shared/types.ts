@@ -385,19 +385,17 @@ export interface McpSettingsResponse {
   servers: Array<{
     name: string;
     config: McpServerConfig;
-    scope: "global" | "workspace";
   }>;
   errors: string[];
 }
 
-export interface McpWorkspaceStatus {
+export interface McpStatus {
   servers: Array<{
     name: string;
     state: string;
     usesOAuth: boolean;
     /** Stored OAuth tokens exist; connection state alone does not imply a sign-in. */
     hasOAuthCredentials: boolean;
-    scope?: "global" | "project" | "extension";
     source?: string;
     tools: Array<{ name: string; description?: string; exposure: string }>;
     error?: string;
@@ -407,7 +405,6 @@ export interface McpWorkspaceStatus {
 
 export interface McpAuthAttempt {
   attemptId: string;
-  workspaceId: string;
   serverName: string;
   status: "pending" | "completed" | "failed" | "cancelled";
   authorizationUrl?: string;
