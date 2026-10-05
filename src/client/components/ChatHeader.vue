@@ -27,7 +27,6 @@ async function logout() {
       >
         <img src="/favicon.png" alt="" />
       </button>
-      <strong>{{ store.settings.appearance.title }}</strong>
     </div>
     <button
       type="button"
@@ -104,8 +103,6 @@ async function logout() {
 .header__brand {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.9rem;
 }
 .header__brand img {
   width: 1.6rem;
@@ -115,7 +112,9 @@ async function logout() {
 .header__button {
   display: grid;
   place-items: center;
-  flex-shrink: 0;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   border: 0;
   border-radius: 0.5rem;
@@ -151,19 +150,11 @@ async function logout() {
 .workspace-list p {
   padding: 1rem;
 }
-@media (max-width: 540px) {
-  .header__brand strong {
-    display: none;
-  }
-}
 @media (max-width: 360px) {
   .header {
     gap: 2px;
     padding-right: calc(var(--safe-area-right) + 4px);
     padding-left: calc(var(--safe-area-left) + 4px);
-  }
-  .header__brand {
-    padding-right: 0;
   }
 }
 </style>
