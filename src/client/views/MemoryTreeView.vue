@@ -170,6 +170,7 @@ nav {
   gap: 8px;
   width: 100%;
   min-height: 44px;
+  height: auto;
   text-align: left;
   padding: 16px;
   border: 1px solid currentColor;
