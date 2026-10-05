@@ -14,7 +14,7 @@ const emit = defineEmits<{ toggle: [] }>();
     :title="expanded ? 'Collapse details' : 'Show details'"
     @click="emit('toggle')"
   >
-    <ChevronUp v-if="expanded" :size="22" />
+    <ChevronUp v-if="!expanded" :size="22" />
     <ChevronDown v-else :size="22" />
   </button>
 </template>
