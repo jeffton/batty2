@@ -108,6 +108,61 @@ async function fixture(persistent = false) {
 }
 
 describe("durable tool bridge", () => {
+  it("preserves nested faults and returned errors alongside successful batched calls", async () => {
+    const { directory, tools, run } = await fixture();
+    await fs.writeFile(path.join(directory, "present.txt"), "hello");
+    tools.registerTools([
+      {
+        name: "returnedError",
+        description: "returns an error result",
+        parameters: Type.Object({}),
+        execute: async () => ({
+          isError: true,
+          content: [{ type: "text", text: "permission denied" }],
+        }),
+      },
+    ]);
+    const result = await run(`const results = await Promise.allSettled([
+      tools.read({path: "present.txt"}),
+      tools.read({path: "missing.txt"}),
+      tools.returnedError({})
+    ]); return results.map(r => r.status === "fulfilled" ? r.value : String(r.reason));`);
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toContain("hello");
+    expect(result.content[0].text).toContain("ENOENT");
+    expect(result.content[0].text).toContain("permission denied");
+    expect(result.details.calls).toHaveLength(3);
+    expect(result.details.calls[0]).toMatchObject({
+      name: "read",
+      args: '{"path":"present.txt"}',
+      status: "ok",
+    });
+    expect(result.details.calls[1]).toMatchObject({
+      name: "read",
+      status: "error",
+      error: expect.stringContaining("ENOENT"),
+    });
+    expect(result.details.calls[2]).toMatchObject({
+      name: "returnedError",
+      status: "error",
+      error: "permission denied",
+    });
+    for (const call of result.details.calls) {
+      expect(call.id).toEqual(expect.any(String));
+      expect(call.durationMs).toBeGreaterThanOrEqual(0);
+    }
+    const invalid = await run("return await Promise.allSettled([tools.read()])");
+    expect(invalid.details.calls[0]).toMatchObject({
+      args: "undefined",
+      status: "error",
+      error: expect.stringContaining("Invalid arguments for read"),
+    });
+    const uncaught = await run('return await tools.read({path: "missing.txt"})');
+    expect(uncaught.isError).toBe(true);
+    expect(uncaught.content[0].text).toContain("ENOENT");
+    expect(uncaught.details.calls[0].error).toContain("ENOENT");
+  });
+
   it("retains explicit read limits and executes registered tools in QuickJS with persistent store", async () => {
     const { directory, tools, api, run } = await fixture();
     await fs.writeFile(path.join(directory, "large.txt"), "x".repeat(60_000));

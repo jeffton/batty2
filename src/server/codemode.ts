@@ -17,6 +17,7 @@ import {
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { McpService } from "./mcp-service";
+import type { CodemodeCall } from "../shared/types";
 import type { createCodemodeTasks } from "./codemode-tasks";
 
 export const CodemodeCalls = defineDoc<{
@@ -52,7 +53,7 @@ export function createCodemodeTool(
       const registrations = (await resolveTools(api, ctx)).filter(
         (tool) => tool.name !== "codemode",
       );
-      const calls: JsonValue[] = [];
+      const calls: CodemodeCall[] = [];
       let ordinal = 0;
       const aborts: Promise<void>[] = [];
       const abortErrors: unknown[] = [];
@@ -85,75 +86,105 @@ export function createCodemodeTool(
                 }
               : { type: "string" },
         execute: async (input, { signal }) => {
-          const args = tool.prepareArguments ? tool.prepareArguments(input) : input;
-          const validator = Compile(tool.parameters);
-          if (!validator.Check(args))
-            throw new Error(
-              `Invalid arguments for ${tool.name}: ${JSON.stringify([...validator.Errors(args)])}`,
-            );
           const index = String(ordinal++);
-          const taskId = await api.commit(async (tx) => {
-            const journal = await tx.doc(CodemodeCalls, api.taskId);
-            const recorded = journal.calls[index];
-            if (recorded) {
-              if (
-                recorded.name !== tool.name ||
-                JSON.stringify(recorded.args) !== JSON.stringify(args)
-              )
-                throw new Error(`Codemode replay changed nested call ${index}`);
-              return recorded.taskId as import("@earendil-works/pi-durable").TaskId<{
-                result: import("@earendil-works/pi-durable").ToolExecutionResult;
-                structured: JsonValue | null;
-              }>;
-            }
-            const taskId = await tx.createTask(
-              nested,
-              { name: tool.name, args: args as JsonValue, callId: `${api.callId}-${index}` },
-              { ownership: { kind: "task", taskId: api.taskId } },
-            );
-            journal.calls[index] = { taskId, name: tool.name, args: args as JsonValue };
-            return taskId;
-          }, ctx);
-          const abort = () => {
-            // Harness shutdown must preserve resumable tasks. Explicit harness
-            // aborts already cascade through ownership; only sandbox-local
-            // deadlines/unawaited calls need an additional task abort.
-            if (ctx.abortSignal?.aborted) return;
-            aborts.push(
-              abortNested(taskId, ctx).catch((error) => {
-                abortErrors.push(error);
-              }),
-            );
-          };
-          signal.addEventListener("abort", abort, { once: true });
-          let settled;
-          try {
-            settled = await api.waitForTask(taskId, withAbortSignal(signal, ctx));
-          } finally {
-            signal.removeEventListener("abort", abort);
-          }
-          if (settled.state.outcome.status !== "completed")
-            throw new Error(`Nested tool ${tool.name} ${settled.state.outcome.status}`);
-          const { result, structured } = settled.state.outcome.result;
-          calls.push({
+          const started = performance.now();
+          const call: CodemodeCall = {
+            id: `${api.callId}-${index}`,
             name: tool.name,
-            status: result.isError ? "error" : "ok",
-            ...(result.details &&
-            typeof result.details === "object" &&
-            !Array.isArray(result.details)
-              ? result.details
-              : {}),
-            details: result.details ?? null,
-          });
-          if (result.control) control = result.control;
-          const text =
-            result.content
-              ?.filter((block) => block.type === "text")
-              .map((block) => block.text)
-              .join("\n") ?? "";
-          if (structured !== null) return structured;
-          if (result.isError) throw new Error(text);
-          return text;
+            args: input === undefined ? "undefined" : JSON.stringify(input),
+            status: "running",
+          };
+          calls.push(call);
+          try {
+            const args = tool.prepareArguments ? tool.prepareArguments(input) : input;
+            call.args = args === undefined ? "undefined" : JSON.stringify(args);
+            const validator = Compile(tool.parameters);
+            if (!validator.Check(args))
+              throw new Error(
+                `Invalid arguments for ${tool.name}: ${JSON.stringify([...validator.Errors(args)])}`,
+              );
+            const taskId = await api.commit(async (tx) => {
+              const journal = await tx.doc(CodemodeCalls, api.taskId);
+              const recorded = journal.calls[index];
+              if (recorded) {
+                if (
+                  recorded.name !== tool.name ||
+                  JSON.stringify(recorded.args) !== JSON.stringify(args)
+                )
+                  throw new Error(`Codemode replay changed nested call ${index}`);
+                return recorded.taskId as import("@earendil-works/pi-durable").TaskId<{
+                  result: import("@earendil-works/pi-durable").ToolExecutionResult;
+                  structured: JsonValue | null;
+                }>;
+              }
+              const taskId = await tx.createTask(
+                nested,
+                { name: tool.name, args: args as JsonValue, callId: `${api.callId}-${index}` },
+                { ownership: { kind: "task", taskId: api.taskId } },
+              );
+              journal.calls[index] = { taskId, name: tool.name, args: args as JsonValue };
+              return taskId;
+            }, ctx);
+            const abort = () => {
+              // Harness shutdown must preserve resumable tasks. Explicit harness
+              // aborts already cascade through ownership; only sandbox-local
+              // deadlines/unawaited calls need an additional task abort.
+              if (ctx.abortSignal?.aborted) return;
+              aborts.push(
+                abortNested(taskId, ctx).catch((error) => {
+                  abortErrors.push(error);
+                }),
+              );
+            };
+            signal.addEventListener("abort", abort, { once: true });
+            let settled;
+            try {
+              settled = await api.waitForTask(taskId, withAbortSignal(signal, ctx));
+            } finally {
+              signal.removeEventListener("abort", abort);
+            }
+            const outcome = settled.state.outcome;
+            if (outcome.status !== "completed") {
+              if (outcome.status === "aborted") call.status = "cancelled";
+              throw new Error(
+                outcome.status === "faulted"
+                  ? outcome.error.message
+                  : outcome.status === "orphaned"
+                    ? outcome.reason
+                    : `Nested tool ${tool.name} ${outcome.status}`,
+              );
+            }
+            const { result, structured } = outcome.result;
+            call.details = result.details ?? null;
+            if (
+              result.details &&
+              typeof result.details === "object" &&
+              !Array.isArray(result.details)
+            ) {
+              Object.assign(call, result.details, {
+                id: call.id,
+                name: call.name,
+                args: call.args,
+                status: call.status,
+              });
+            }
+            if (result.control) control = result.control;
+            const text =
+              result.content
+                ?.filter((block) => block.type === "text")
+                .map((block) => block.text)
+                .join("\n") ?? "";
+            if (result.isError) throw new Error(text);
+            call.status = "ok";
+            if (structured !== null) return structured;
+            return text;
+          } catch (error) {
+            if (call.status !== "cancelled") call.status = "error";
+            call.error = error instanceof Error ? error.message : String(error);
+            throw error;
+          } finally {
+            call.durationMs = performance.now() - started;
+          }
         },
       }));
       const globals: CodemodeTool[] = [
@@ -234,11 +265,7 @@ export function createCodemodeTool(
           return { ...block, text };
         });
         const effects = (key: string) =>
-          calls.flatMap((call) =>
-            call && typeof call === "object" && !Array.isArray(call) && Array.isArray(call[key])
-              ? (call[key] as JsonValue[])
-              : [],
-          );
+          calls.flatMap((call) => (Array.isArray(call[key]) ? (call[key] as JsonValue[]) : []));
         const sentFiles = effects("sentFiles");
         const sites = effects("sites");
         return {

@@ -30,7 +30,21 @@ export interface SiteDescriptor {
   public: boolean;
 }
 
+export interface CodemodeCall {
+  id: string;
+  name: string;
+  args: string;
+  status: "running" | "ok" | "error" | "cancelled";
+  durationMs?: number;
+  error?: string;
+  cost?: number;
+  subagent?: { sessionId?: string };
+  details?: unknown;
+  [key: string]: unknown;
+}
+
 export interface ToolExecutionDetails {
+  calls?: CodemodeCall[];
   diff?: string;
   firstChangedLine?: number;
   sentFiles?: SentFileDescriptor[];

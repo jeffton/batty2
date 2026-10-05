@@ -6,17 +6,6 @@ import CodeBlock from "@/client/components/CodeBlock.vue";
 import { createHeadView } from "@/client/lib/tool-output";
 import type { ToolExecutionDetails, UiContentBlock } from "@/shared/types";
 
-type NestedCall = {
-  id: string;
-  name: string;
-  args: string;
-  status: "running" | "ok" | "error" | "cancelled";
-  durationMs?: number;
-  error?: string;
-  cost?: number;
-  subagent?: { sessionId?: string };
-};
-
 const props = withDefaults(
   defineProps<{
     code: string;
@@ -36,7 +25,7 @@ function popoverId(index: number): string {
 
 const expanded = ref(false);
 const codeView = computed(() => createHeadView(props.code.replaceAll("\r", "").trimEnd(), 10));
-const calls = computed(() => (props.details?.calls as NestedCall[] | undefined) ?? []);
+const calls = computed(() => props.details?.calls ?? []);
 const visibleCalls = computed(() => (expanded.value ? calls.value : calls.value.slice(-8)));
 const output = computed(() => {
   if (props.status === "running") return "";
@@ -86,12 +75,7 @@ function cost(value: number): string {
       <div v-if="!expanded && calls.length > 8" class="codemode-display__muted">
         {{ calls.length - 8 }} earlier calls
       </div>
-      <!-- Pi gives concurrent running calls the same temporary ID; their array positions are stable. -->
-      <div
-        v-for="(call, index) in visibleCalls"
-        :key="expanded ? index : Math.max(0, calls.length - 8) + index"
-        class="codemode-display__call"
-      >
+      <div v-for="(call, index) in visibleCalls" :key="call.id" class="codemode-display__call">
         <div class="codemode-display__summary">
           <span :class="`codemode-display__status--${call.status}`" :aria-label="call.status">
             {{ icons[call.status] }}
