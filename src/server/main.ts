@@ -159,11 +159,13 @@ app.get<{ Params: { sessionId: string } }>(
     const conversation = await runtime.conversation(request.params.sessionId);
     const agent = await conversation.agent(context);
     return {
-      skills: runtime.resources.skills(agent.cwd ?? config.selfPath).map((skill) => ({
-        name: skill.name,
-        description: skill.description,
-        filePath: skill.filePath,
-      })),
+      skills: (await runtime.resources.sessionSkills(agent.cwd ?? config.selfPath)).map(
+        (skill) => ({
+          name: skill.name,
+          description: skill.description,
+          filePath: skill.filePath,
+        }),
+      ),
       tools: agent.tools.map((tool) => ({ name: tool.name, description: tool.description })),
     };
   },

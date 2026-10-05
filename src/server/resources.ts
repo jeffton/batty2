@@ -4,14 +4,17 @@ import { loadSkills, formatSkillsForPrompt } from "@earendil-works/pi-coding-age
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { AppConfig } from "./config";
 import { stateDirPath } from "./options";
+import { listWorkspaces } from "./workspaces";
 
 export function createResources(config: AppConfig) {
   const agentDir = stateDirPath(config.battyDir);
-  function skills(cwd: string) {
+  function skills(cwd: string, assistantPath?: string) {
+    const skillPaths = [path.join(agentDir, "skills"), path.join(cwd, ".batty", "skills")];
+    if (assistantPath) skillPaths.push(path.join(assistantPath, ".batty", "skills"));
     const result = loadSkills({
       cwd,
       agentDir,
-      skillPaths: [path.join(agentDir, "skills"), path.join(cwd, ".batty", "skills")],
+      skillPaths: [...new Set(skillPaths.map((skillPath) => path.resolve(skillPath)))],
       includeDefaults: false,
     });
     for (const diagnostic of result.diagnostics) console.warn("Skill diagnostic", diagnostic);
@@ -31,6 +34,11 @@ export function createResources(config: AppConfig) {
   }
   return {
     skills,
+    async sessionSkills(cwd: string) {
+      const workspaces = await listWorkspaces(config);
+      const assistantPath = workspaces.find((workspace) => workspace.isAssistant)?.path;
+      return skills(cwd, assistantPath);
+    },
     extension: defineExtension({
       name: "batty-resources",
       sections: [
