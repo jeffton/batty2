@@ -575,8 +575,8 @@ defineExpose({ clear, restore });
 }
 
 .composer__actions-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0 calc(var(--safe-area-right) + 0.4rem) 0 calc(var(--safe-area-left) + 0.4rem);
@@ -627,28 +627,38 @@ defineExpose({ clear, restore });
 }
 
 .composer__stream-actions {
-  justify-self: center;
+  min-width: 0;
+  flex-shrink: 1;
+  margin-inline: auto;
 }
 
 .composer__send-actions {
   min-width: 0;
+  flex-shrink: 1;
   justify-content: flex-end;
-  justify-self: end;
+  margin-left: auto;
+}
+
+.composer__send-actions :deep(.model-config-selector__button) {
+  min-width: var(--button-size);
+  flex-shrink: 1;
 }
 
 @media (max-width: 540px) {
-  .composer__actions-row:has(.composer__stream-actions) {
-    grid-template-columns: auto minmax(0, 1fr);
+  /* Streaming has five actions: reserve their full targets, compact model text. */
+  .composer__send-actions:has(.composer__steer) {
+    flex-shrink: 0;
   }
 
-  .composer__stream-actions {
-    grid-column: 1 / -1;
-    grid-row: 1;
+  .composer__send-actions:has(.composer__steer) :deep(.model-config-selector__info) {
+    display: none;
   }
 
-  .composer__actions-row:has(.composer__stream-actions) > .composer__icon-button,
-  .composer__actions-row:has(.composer__stream-actions) > .composer__send-actions {
-    grid-row: 2;
+  .composer__send-actions:has(.composer__steer) :deep(.model-config-selector__button) {
+    width: var(--button-size);
+    padding: 0;
+    grid-template-columns: auto;
+    gap: 0;
   }
 }
 </style>

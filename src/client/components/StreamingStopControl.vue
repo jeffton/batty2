@@ -41,10 +41,17 @@ function triggerClick(): void {
 
 <template>
   <div class="streaming-stop-control">
-    <span v-if="props.statusLabel || props.compacting" class="streaming-stop-control__status">{{
-      props.statusLabel ?? "Compacting"
-    }}</span>
-    <span v-else-if="props.subagentCount" class="streaming-stop-control__status">
+    <span
+      v-if="props.statusLabel || props.compacting"
+      class="streaming-stop-control__status"
+      :title="props.statusLabel ?? 'Compacting'"
+      >{{ props.statusLabel ?? "Compacting" }}</span
+    >
+    <span
+      v-else-if="props.subagentCount"
+      class="streaming-stop-control__status"
+      :title="`${props.subagentCount} ${props.subagentCount === 1 ? 'subagent' : 'subagents'}`"
+    >
       {{ props.subagentCount }} {{ props.subagentCount === 1 ? "subagent" : "subagents" }}
     </span>
     <span class="spinner streaming-stop-control__spinner" aria-hidden="true" />
@@ -72,6 +79,9 @@ function triggerClick(): void {
 }
 
 .streaming-stop-control__status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0.35rem 0.55rem;
   border-radius: 0.5rem;
   background: var(--color-bg-elevated);
@@ -85,6 +95,7 @@ function triggerClick(): void {
   width: 1rem;
   height: 1rem;
   border-width: 2px;
+  flex-shrink: 0;
 }
 
 .streaming-stop-control__button {
