@@ -371,10 +371,9 @@ export class Runtime {
       thinkingLevel: agent.thinkingLevel,
       availableThinkingLevels: model ? getSupportedThinkingLevels(model) : ["off"],
       isStreaming: Boolean(live?.run),
-      isCompacting:
-        Boolean(live?.compactions?.length) ||
-        (conversation.id === this.main.id &&
-          (this.memory.status().pending > 0 || !!this.memory.status().error)),
+      // Main declines native compaction tasks; only workers produce native summaries.
+      isCompacting: conversation.id !== this.main.id && Boolean(live?.compactions?.length),
+      memoryPreparation: conversation.id === this.main.id ? this.memory.status() : undefined,
       pendingMessageCount: inbox?.items?.length ?? 0,
       queuedPrompts: (inbox?.items ?? []).flatMap((item) =>
         item.mode === "write"

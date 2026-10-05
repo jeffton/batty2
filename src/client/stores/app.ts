@@ -47,12 +47,6 @@ export const useAppStore = defineStore("app", {
       if (this.bootstrapFailed || !this.bootstrapped || !this.activeSession) await this.bootstrap();
       else if (this.authenticated) this.openStream();
     },
-    async refreshMemoryStatus() {
-      const status = await api.getMemoryStatus();
-      if (!this.activeSession?.isCompacting) return;
-      this.memoryStatus = status;
-      if (status.error) this.lastError = status.error;
-    },
     openStream() {
       this.closeStream();
       this.connectionState = "connecting";

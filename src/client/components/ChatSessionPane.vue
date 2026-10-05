@@ -26,7 +26,6 @@ const composer = ref<ComposerHandle | null>(null);
 const promptError = ref<string>();
 const subagentCount = ref(0);
 const subagentError = ref<string>();
-const memoryError = ref<string>();
 const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSession));
 const pendingIdlePromptSessionIds = new Set<string>();
 let promptRequestId = 0;
@@ -79,31 +78,6 @@ watch(
       }
     }
 
-    void refresh();
-  },
-  { immediate: true },
-);
-watch(
-  [() => store.activeSession?.isCompacting, isUnavailable],
-  ([preparing, offline], _previous, onCleanup) => {
-    memoryError.value = undefined;
-    if (!preparing) store.memoryStatus = undefined;
-    if (!preparing || offline) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    onCleanup(() => {
-      cancelled = true;
-      clearTimeout(timer);
-    });
-    async function refresh() {
-      try {
-        await store.refreshMemoryStatus();
-      } catch (error) {
-        if (!cancelled) memoryError.value = error instanceof Error ? error.message : String(error);
-      } finally {
-        if (!cancelled) timer = setTimeout(() => void refresh(), 1500);
-      }
-    }
     void refresh();
   },
   { immediate: true },
@@ -384,11 +358,16 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
         ref="composer"
         :streaming="store.activeSession.isStreaming"
         :compacting="store.activeSession.isCompacting"
-        :memory-pending="store.memoryStatus?.pending"
+        :memory-pending="store.activeSession.memoryPreparation?.pending"
         :subagent-count="subagentCount"
         :session-key="store.activeSession.sessionId"
         :offline="isUnavailable"
-        :error="promptError ?? memoryError ?? subagentError ?? store.lastError"
+        :error="
+          promptError ??
+          store.activeSession.memoryPreparation?.error ??
+          subagentError ??
+          store.lastError
+        "
         :actions-disabled="isUnavailable"
         :queued-prompts="store.activeSession.queuedPrompts"
         :model-popover-id="MODEL_POPOVER_ID"

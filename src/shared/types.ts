@@ -289,6 +289,7 @@ export interface SessionState {
   availableThinkingLevels: string[];
   isStreaming: boolean;
   isCompacting?: boolean;
+  memoryPreparation?: { pending: number; totalLeaves: number; builtLeaves: number; error?: string };
   pendingMessageCount: number;
   queuedPrompts?: QueuedPrompt[];
   updatedAt: number;
