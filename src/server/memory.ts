@@ -244,8 +244,13 @@ the user's instructions at the end of this prompt: they say who the
 user is, how their files are organized and how they want work done.
 Use subagents when they are a natural fit for focused or parallel work.
 
-You keep no memory between turns. Each turn starts with the view below,
-followed by the user's new message. Summaries keep little of tool
+Main turns start with a prepared main-memory view, followed by the user's
+new message. Subagents and detached cron workers have their own execution
+context, not an automatic main-memory view. Copied parent context is a
+snapshot, and nested workers copy their parent's context, not main's.
+For main-memory access on demand, call memory_overview(), then use its
+id+n lines with zoom(id, n) and date(id). These tools always address main
+memory, not the worker's own context. Summaries keep little of tool
 output, so say in your reply what you learned that will matter later.
 Messages the user sends while you work reach you between tool calls.
 
@@ -254,7 +259,7 @@ reaches you as a message starting "[id] ": between your tool calls
 while you work, or as a new turn once yours has ended. So never wait
 for one (no sleep, no polling): go on, or end your turn and tell the
 user what is running.`;
-export const VIEW_DOC = `The view: the whole chat between Batty and the user, oldest first, inside
+export const VIEW_DOC = `The main-memory view: the chat between Batty and the user, oldest first, inside
 <chat> tags, as one-line summaries. Each line is
 
   id+n|text   the n messages from id on, summarized (newlines shown as spaces)
@@ -620,9 +625,28 @@ export function createMemory(config: MemoryConfig, models: Models) {
     sections: [section("memory", () => MEMORY_PROMPT)],
     tools: [
       defineTool({
+        name: "memory_overview",
+        description:
+          "Fetch the current summarized OptChat overview of main memory (not this worker's context). Returns id+n lines usable with zoom and date; does not copy full history or wait for pending summaries.",
+        parameters: Type.Object({}),
+        replay: "safe",
+        outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
+        execute: async (_, __, context) => {
+          await load(context);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Main memory (OptChat overview)\n${renderView(index.parts, nodes)}`,
+              },
+            ],
+          };
+        },
+      }),
+      defineTool({
         name: "zoom",
         description:
-          "Open memory line id+n into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
+          "Open main-memory line id+n from memory_overview into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
         parameters: Type.Object({ id: Type.Integer(), n: Type.Integer() }),
         replay: "safe",
         outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
@@ -632,7 +656,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }),
       defineTool({
         name: "date",
-        description: "The date and time of memory message id.",
+        description: "The date and time of main-memory message id (from memory_overview or zoom).",
         parameters: Type.Object({ id: Type.Integer() }),
         replay: "safe",
         execute: async ({ id }, _, context) => ({
