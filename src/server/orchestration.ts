@@ -131,6 +131,8 @@ export const OrchestrationDoc = defineDoc<{
   inlineContext?: InlineContext;
   workers: Record<string, Worker>;
   calls: Record<string, { workerId: string; taskId: TaskId<string> }>;
+  joins?: Record<string, TaskId>;
+  joinParents?: Record<string, SubmissionId>;
   jobs: Record<string, CronJob>;
   runs: Record<string, CronRun>;
 }>({
@@ -503,35 +505,79 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       },
       report: async (task, runtime, ctx) => {
         const { text, send, failed } = task.state.checkpoint;
-        if (send) {
-          const state = await runtime.snapshot(OrchestrationDoc, ctx);
+        const state = await runtime.snapshot(OrchestrationDoc, ctx);
+        if (send && !state?.joins?.[String(task.id)]) {
           const targetId = task.input.runId
             ? task.input.mainId
             : state!.workers[task.input.workerId]!.parentId;
           const target = (await runtime.conversation(targetId, ctx))!;
-          await target.submit(
-            {
-              type: "input",
-              content: encodeRuntimeNotice({
-                kind: task.input.runId ? "cron" : "subagent",
-                text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
-                data: {
-                  runtimeNotice: {
-                    text: `${task.input.runId ? "Cron" : "Subagent"} ${task.input.workerId} result`,
-                    markdown: text,
-                  },
-                  [task.input.runId ? "cron" : "subagent"]: {
-                    sessionId: task.input.workerId,
-                    prompt: task.input.prompt,
-                    ...(task.input.runId ? { runId: task.input.runId } : {}),
-                  },
-                },
-              }),
-              whenBusy: task.input.runId ? "followUp" : "steer",
-              requestId: `batty-report:${task.id}`,
+          const content = encodeRuntimeNotice({
+            kind: task.input.runId ? "cron" : "subagent",
+            text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
+            data: {
+              runtimeNotice: {
+                text: `${task.input.runId ? "Cron" : "Subagent"} ${task.input.workerId} result`,
+                markdown: text,
+              },
+              [task.input.runId ? "cron" : "subagent"]: {
+                sessionId: task.input.workerId,
+                prompt: task.input.prompt,
+                ...(task.input.runId ? { runId: task.input.runId } : {}),
+              },
             },
-            ctx,
-          );
+          });
+          const requestId = `batty-report:${task.id}`;
+          // Helpers completing during a parent tool round must arbitrate report
+          // admission with join registration on the same transaction line.
+          let handled = false;
+          if (!task.input.runId) {
+            await runtime.commit(async (tx) => {
+              const doc = await tx.doc(OrchestrationDoc);
+              if (doc.joins?.[String(task.id)] !== undefined) {
+                handled = true;
+                return;
+              }
+              const existing = await tx.submissionByRequest(targetId, requestId);
+              if (existing) {
+                handled = true;
+                return;
+              }
+              const live = await tx.doc(LiveDoc, targetId);
+              if (!live.run) return;
+              const submission = await tx.createSubmission({
+                conversationId: targetId,
+                type: "input",
+                status: "queued",
+                requestId,
+              });
+              (await tx.doc(InboxDoc, targetId)).items.push({
+                id: submission.id,
+                mode:
+                  doc.joinParents?.[String(targetId)] === live.run.inputs[0] ? "followUp" : "steer",
+                content,
+              });
+              handled = true;
+            }, ctx);
+          }
+          if (!handled) {
+            const submission = await target.submit(
+              {
+                type: "input",
+                content,
+                whenBusy: task.input.runId ? "followUp" : "steer",
+                requestId,
+              },
+              ctx,
+            );
+            // An idle parent can become busy between the commit and submit.
+            // A joined parent is still held in its tool round until this task ends.
+            if (
+              !task.input.runId &&
+              (await runtime.snapshot(OrchestrationDoc, ctx))?.joins?.[String(task.id)] !==
+                undefined
+            )
+              await submission.abort(ctx);
+          }
         }
         await runtime.commit(async (tx) => {
           if (task.input.runId) {
@@ -648,7 +694,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const subagent = defineTool({
     name: "subagent",
     description:
-      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async. Async results steer their spawning parent when busy or start a turn when idle. Await yields main turns; workers durably wait. Async await acknowledges completion; the result arrives only as a report.",
+      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async and main await yields its turn. Async results go to the spawning parent. In workers and cron turns, await durably joins an owned child and returns its final result in the tool call, suppressing its pending separate report. Other helper reports wait until joined or the parent turn finishes. The parent continues processing; only its final cron output reaches main. Start multiple async helpers before awaiting to run them in parallel.",
     replay: "safe",
     parameters: Type.Object({
       action: Type.Union(
@@ -675,18 +721,47 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const active =
         worker?.active === undefined ? undefined : await api.getTask(worker.active, ctx);
       const running = active !== undefined && active.state.status !== "terminal";
-      if (args.action === "await" && api.conversationId !== state!.mainId) {
-        // Worker turns have a delivery waiting for their final answer. Terminating
-        // here would settle that delivery with this tool call, not a final report.
+      if (
+        args.action === "await" &&
+        (api.conversationId !== state!.mainId || state!.inlineContext)
+      ) {
+        // Only joining a direct child is acyclic. Pin the delivery across replay,
+        // even when a later queue/resume changes the worker's active task.
+        if (worker!.parentId !== api.conversationId)
+          throw new Error("Await requires a child of this session");
         const target = await api.memo("batty.await", worker!.active!, ctx);
+        await api.commit(async (tx) => {
+          const doc = await tx.doc(OrchestrationDoc);
+          doc.joins ??= {};
+          const joins = doc.joins;
+          joins[String(target)] = api.taskId;
+          const live = await tx.doc(LiveDoc, api.conversationId);
+          doc.joinParents ??= {};
+          // Inputs survive generation handovers; taskId changes every tool round.
+          doc.joinParents[String(api.conversationId)] = live.run!.inputs[0]!;
+          // Keep other parallel helpers pending until explicitly joined or this
+          // parent turn finishes; steering must not replace an await continuation.
+          const pending = await tx.doc(InboxDoc, api.conversationId);
+          for (const item of pending.items) {
+            if (item.mode !== "steer") continue;
+            const notice = decodeRuntimeNotice(item.content);
+            if (notice?.kind === "subagent") item.mode = "followUp";
+          }
+          // A faster parallel child may have queued its report before this join.
+          // Withdraw it atomically before the tool round admits steering inputs.
+          const report = await tx.submissionByRequest(api.conversationId, `batty-report:${target}`);
+          if (report?.status === "queued") {
+            tx.settleSubmission(report.id, { status: "unanswered", reason: "aborted" });
+            const inbox = await tx.doc(InboxDoc, api.conversationId);
+            inbox.items = inbox.items.filter((item) => item.id !== report.id);
+          }
+        }, ctx);
+        // No terminate control: the generation remains live while this tool waits.
+        // waitForTask replays safely after restart; completion resumes the model.
         const settled = await api.waitForTask(target, ctx);
-        // Async delivery submits its report before becoming terminal. Steering is
-        // admitted after this tool round, so await must not repeat the result.
         return reply(
           settled.state.outcome.status === "completed"
-            ? (settled.input as unknown as DeliveryInput).report
-              ? `Subagent finished. Session ID: ${workerId}. Result delivered to parent.`
-              : settled.state.outcome.result
+            ? settled.state.outcome.result
             : `Subagent ${settled.state.outcome.status}`,
         );
       }

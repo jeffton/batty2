@@ -543,8 +543,8 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
           });
         if (last.role === "user" && text.includes("preflight review"))
           return fauxAssistantMessage([fauxText("preflight complete")]);
-        if (last.role === "user" && text.includes("preflight complete")) {
-          const sessionId = text.match(/subagent (\d+) result/)![1];
+        if (last.role === "toolResult" && text.includes("preflight complete")) {
+          const sessionId = JSON.stringify(request.messages).match(/Session ID: (\d+)/)![1];
           return call({ action: "resume", async: true, sessionId, prompt: "nested review" });
         }
         if (last.role === "user" && text.includes("nested review"))
@@ -555,7 +555,7 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
         }
         if (last.role === "toolResult" && last.toolName === "review_gate")
           return fauxAssistantMessage([fauxText("review findings")]);
-        if (last.role === "user" && text.includes("review findings"))
+        if (last.role === "toolResult" && text.includes("review findings"))
           return fauxAssistantMessage([fauxText("implementation final report after review")]);
         return fauxAssistantMessage([fauxText("noted")]);
       }),
@@ -585,14 +585,17 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
         if (!outer) return false;
         const live = await harness.snapshot(LiveDoc, outer.id, context);
         for (const slot of live?.tools ?? []) {
-          if (
-            slot.taskId &&
-            (await harness.getTask(slot.taskId, context))?.memos?.["batty.await"] !== undefined
-          )
-            return true;
+          if (slot.taskId && Object.values(state.joins ?? {}).includes(slot.taskId)) return true;
         }
         return false;
       });
+      const pendingHistory = JSON.stringify((await main.context(context)).messages);
+      expect(pendingHistory).not.toContain("implementation final report after review");
+      expect(pendingHistory).not.toContain("review findings");
+      if (mode.startsWith("cron-")) {
+        expect(await orchestration.listRunningCron()).toHaveLength(1);
+        expect((await orchestration.listRunningCron())[0]!.output).toBeUndefined();
+      }
       if (mode.endsWith("restart")) {
         // Queue/resume replaces active with a later delivery. Recovery must keep
         // the target recorded by the already-running await, not follow this tail.
@@ -633,12 +636,12 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
       outerMessages.filter(
         (m) => m.role === "user" && JSON.stringify(m.content).includes("review findings"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       outerMessages.filter(
         (m) => m.role === "toolResult" && JSON.stringify(m.content).includes("review findings"),
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     expect(outerMessages.findLast((m) => m.role === "assistant")).toMatchObject({
       content: [{ type: "text", text: "implementation final report after review" }],
     });
@@ -1469,6 +1472,202 @@ test("cron admission retries updated job fields rather than admitting a stale sn
   expect(transcript).toContain("new prompt");
   expect(transcript).not.toContain("old prompt");
 }, 15000);
+
+test.each([
+  ["daily-detached", false],
+  ["main-inline", false],
+  ["daily-detached", true],
+  ["main-inline", true],
+] as const)(
+  "cron %s joins parallel children (late=%s) and finishes postprocessing before delivery",
+  async (kind, late) => {
+    const { faux, orchestration, open, registry } = await fixture();
+    let releaseChild!: () => void;
+    let releaseParent!: () => void;
+    const childGate = new Promise<void>((resolve) => {
+      releaseChild = resolve;
+    });
+    const parentGate = new Promise<void>((resolve) => {
+      releaseParent = resolve;
+    });
+    let releaseFast!: () => void;
+    let releaseBetween!: () => void;
+    const fastGate = new Promise<void>((resolve) => {
+      releaseFast = resolve;
+    });
+    const betweenGate = new Promise<void>((resolve) => {
+      releaseBetween = resolve;
+    });
+    let continuing = false;
+    let processing = false;
+    registry.install(
+      defineExtension({
+        name: "parallel-join-test",
+        tools: [
+          defineTool({
+            name: "join_gate",
+            description: "hold child or postprocessing",
+            parameters: Type.Object({
+              parent: Type.Boolean(),
+              fast: Type.Optional(Type.Boolean()),
+              between: Type.Optional(Type.Boolean()),
+            }),
+            replay: "safe",
+            execute: async ({ parent, fast, between }) => {
+              if (fast) {
+                await fastGate;
+                return { content: [{ type: "text", text: "fast ready" }] };
+              }
+              if (between) {
+                continuing = true;
+                await betweenGate;
+                return { content: [{ type: "text", text: "continue joins" }] };
+              }
+              if (parent) processing = true;
+              await (parent ? parentGate : childGate);
+              return { content: [{ type: "text", text: parent ? "processed" : "child ready" }] };
+            },
+          }),
+        ],
+      }),
+    );
+    const { harness, main } = await open();
+    const call = (args: { action: string; sessionId: string }) =>
+      fauxAssistantMessage([fauxToolCall("subagent", args)], { stopReason: "toolUse" });
+    faux.setResponses(
+      Array.from({ length: 60 }, () => (request) => {
+        const last = request.messages.findLast((m) => m.role !== "system")!;
+        const text = JSON.stringify(last.content);
+        if (last.role === "user" && text.includes("parallel cron"))
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("subagent", {
+                action: "run",
+                async: true,
+                prompt: "slow parallel child",
+              }),
+              fauxToolCall("subagent", {
+                action: "run",
+                async: true,
+                prompt: "fast parallel child",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "user" && text.includes("slow parallel child"))
+          return fauxAssistantMessage([fauxToolCall("join_gate", { parent: false })], {
+            stopReason: "toolUse",
+          });
+        if (last.role === "user" && text.includes("fast parallel child"))
+          return late
+            ? fauxAssistantMessage([fauxToolCall("join_gate", { parent: false, fast: true })], {
+                stopReason: "toolUse",
+              })
+            : fauxAssistantMessage([fauxText("fast findings")]);
+        if (last.role === "toolResult" && text.includes("fast ready"))
+          return fauxAssistantMessage([fauxText("fast findings")]);
+        if (last.role === "toolResult" && text.includes("Started. Session ID:")) {
+          const started = request.messages.filter(
+            (m) =>
+              m.role === "toolResult" && JSON.stringify(m.content).includes("Started. Session ID:"),
+          );
+          return call({
+            action: "await",
+            sessionId: JSON.stringify(started[0]!.content).match(/Session ID: (\d+)/)![1]!,
+          });
+        }
+        if (last.role === "toolResult" && text.includes("child ready"))
+          return fauxAssistantMessage([fauxText("slow findings")]);
+        if (last.role === "toolResult" && text.includes("slow findings") && late)
+          return fauxAssistantMessage(
+            [fauxToolCall("join_gate", { parent: false, between: true })],
+            { stopReason: "toolUse" },
+          );
+        if (
+          last.role === "toolResult" &&
+          (text.includes("slow findings") || text.includes("continue joins"))
+        ) {
+          const started = request.messages.filter(
+            (m) =>
+              m.role === "toolResult" && JSON.stringify(m.content).includes("Started. Session ID:"),
+          );
+          return call({
+            action: "await",
+            sessionId: JSON.stringify(started[1]!.content).match(/Session ID: (\d+)/)![1]!,
+          });
+        }
+        if (last.role === "toolResult" && text.includes("fast findings"))
+          return fauxAssistantMessage([fauxToolCall("join_gate", { parent: true })], {
+            stopReason: "toolUse",
+          });
+        if (last.role === "toolResult" && text.includes("processed"))
+          return fauxAssistantMessage([fauxText("combined cron final")]);
+        return fauxAssistantMessage([fauxText("noted")]);
+      }),
+    );
+    const job = await orchestration.addJob({
+      prompt: "parallel cron",
+      session: { kind: kind as "daily-detached" | "main-inline" },
+      schedule: { kind: "at", in: "1h" },
+    });
+    await main.commit(async (tx) => {
+      (await tx.doc(OrchestrationDoc)).jobs[job.id]!.nextAt = Date.now() - 1;
+    }, context);
+    await orchestration.tick();
+    try {
+      await until(async () => {
+        const state = (await harness.snapshot(OrchestrationDoc, context))!;
+        const fast = Object.values(state.workers).find((w) => w.prompt === "fast parallel child");
+        return (
+          !!fast?.active &&
+          (late || (await harness.getTask(fast.active, context))?.state.status === "terminal") &&
+          Object.keys(state.joins ?? {}).length > 0
+        );
+      });
+      expect(await orchestration.listRunningCron()).toHaveLength(1);
+      releaseChild();
+      if (late) {
+        await until(async () => continuing);
+        releaseFast();
+        await until(async () => {
+          const state = (await harness.snapshot(OrchestrationDoc, context))!;
+          const fast = Object.values(state.workers).find(
+            (w) => w.prompt === "fast parallel child",
+          )!;
+          return (await harness.getTask(fast.active!, context))?.state.status === "terminal";
+        });
+        releaseBetween();
+      }
+      await until(async () => processing);
+      expect(await orchestration.listRunningCron()).toHaveLength(1);
+      expect(JSON.stringify((await main.context(context)).messages)).not.toContain(
+        "combined cron final",
+      );
+      const run = (await orchestration.listRunningCron())[0]!;
+      const parent = (await harness.conversation(Number(run.sessionId) as never, context))!;
+      expect(
+        (await parent.context(context)).messages.filter(
+          (m) => m.role === "user" && JSON.stringify(m.content).includes("findings"),
+        ),
+      ).toHaveLength(0);
+    } finally {
+      releaseChild();
+      releaseParent();
+      releaseFast();
+      releaseBetween();
+    }
+    await until(async () => (await orchestration.listRunningCron()).length === 0);
+    await main.waitForIdle(context);
+    expect((await orchestration.listRunLogs(job.id))[0]!.output).toBe("combined cron final");
+    if (kind === "daily-detached")
+      expect(
+        (await main.context(context)).messages.filter(
+          (m) => m.role === "user" && JSON.stringify(m.content).includes("combined cron final"),
+        ),
+      ).toHaveLength(1);
+  },
+  15000,
+);
 
 test("closing in-flight background work resumes the same child input and report", async () => {
   const { faux, orchestration, open } = await fixture(100);
