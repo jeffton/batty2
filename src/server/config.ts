@@ -21,6 +21,7 @@ export interface AppConfig {
   publicDir: string;
   webPushDir: string;
   webPushSubject: string;
+  pushTitle: string;
   cronDailySessionStartTime: string;
   braveSearchKey?: string;
   browserTailscaleSshDestination?: string;
@@ -129,6 +130,7 @@ export async function loadConfig(battyDir: string): Promise<AppConfig> {
     publicDir: path.join(selfPath, "dist", "client"),
     webPushDir: path.join(stateDir, "web-push"),
     webPushSubject: options.webPushSubject,
+    pushTitle: options.pushTitle,
     cronDailySessionStartTime: options.cronDailySessionStartTime,
     braveSearchKey: options.braveSearchKey,
     browserTailscaleSshDestination: options.browserTailscaleSshDestination,

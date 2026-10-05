@@ -372,6 +372,7 @@ export interface ProviderUsage {
 
 export interface AppSettingsStatus {
   memoryModel: string;
+  pushTitle: string;
   memoryReasoning: string;
   braveSearchConfigured: boolean;
   defaultProvider?: string;

@@ -33,6 +33,7 @@ function createConfig(webPushDir: string): AppConfig {
     publicDir: "/tmp/public",
     webPushDir,
     webPushSubject: "mailto:test@example.com",
+    pushTitle: "Roy",
     cronDailySessionStartTime: "04:00",
     memoryModel: "openai-codex/gpt-6-luna",
     browserMaxTabs: 16,
@@ -151,6 +152,24 @@ describe("WebPushService", () => {
     );
     await service.removeSubscription(endpoint);
     expect(await persistedEndpoints()).toEqual([]);
+  });
+
+  it("uses the live global push title across workspaces", async () => {
+    const config = createConfig(tempDir);
+    const service = new WebPushService(config);
+    await service.upsertSubscription(subscription("https://fcm.googleapis.com/title"));
+    for (const workspaceId of ["first", "second"]) {
+      await service.notifyAgentCompleted({
+        ...createSession(),
+        workspaceId,
+        cwd: `/work/${workspaceId}`,
+      });
+    }
+    config.pushTitle = "Custom title";
+    await service.notifyAgentCompleted(createSession());
+    expect(
+      webPushMocks.sendNotification.mock.calls.map((call) => JSON.parse(call[1]).title),
+    ).toEqual(["Roy", "Roy", "Custom title"]);
   });
 
   it("serializes concurrent registrations and deletions without losing devices", async () => {

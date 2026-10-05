@@ -164,7 +164,7 @@ export class WebPushService {
     return result;
   }
 
-  constructor(config: AppConfig) {
+  constructor(private readonly config: AppConfig) {
     this.vapidKeysPath = path.join(config.webPushDir, "vapid-keys.json");
     this.subscriptionsPath = path.join(config.webPushDir, "subscriptions.json");
     this.subject = config.webPushSubject;
@@ -229,7 +229,7 @@ export class WebPushService {
       return;
     }
 
-    const content = buildAgentCompletionNotificationContent(session);
+    const content = buildAgentCompletionNotificationContent(session, this.config.pushTitle);
     const payload: PushNotificationPayload = {
       ...content,
       data: {

@@ -43,6 +43,9 @@ const apiKeyInputs = reactive<Record<"google" | "openrouter", string>>({
   google: "",
   openrouter: "",
 });
+const pushTitle = ref("");
+const pushTitleSaving = ref(false);
+const pushTitleError = ref("");
 const appearanceTitle = ref("");
 const appearanceColor = ref<AppColor>("neutral");
 const appearanceSaving = ref(false);
@@ -408,6 +411,27 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => store.settings.pushTitle,
+  (title) => {
+    pushTitle.value = title;
+  },
+  { immediate: true },
+);
+
+async function savePushTitle(): Promise<void> {
+  pushTitleSaving.value = true;
+  pushTitleError.value = "";
+  try {
+    await store.setPushTitle(pushTitle.value.trim());
+    pushTitle.value = store.settings.pushTitle;
+  } catch (error) {
+    pushTitleError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    pushTitleSaving.value = false;
+  }
+}
+
 function logout(): void {
   closePopover();
   emit("logout");
@@ -502,6 +526,31 @@ function handlePopoverToggle(event: Event): void {
         </button>
         <div v-if="appearanceError" class="settings-popover__error" role="alert">
           {{ appearanceError }}
+        </div>
+      </section>
+
+      <section class="settings-popover__section">
+        <div class="settings-popover__group-title">Push notifications</div>
+        <label class="settings-popover__field">
+          <span>Title</span>
+          <input
+            v-model="pushTitle"
+            class="settings-popover__input"
+            type="text"
+            :disabled="pushTitleSaving"
+            @keydown.enter.prevent="savePushTitle"
+          />
+        </label>
+        <button
+          class="settings-popover__action settings-popover__action--primary"
+          type="button"
+          :disabled="pushTitleSaving || !pushTitle.trim()"
+          @click="savePushTitle"
+        >
+          <Save :size="14" /> {{ pushTitleSaving ? "Saving…" : "Save push title" }}
+        </button>
+        <div v-if="pushTitleError" class="settings-popover__error" role="alert">
+          {{ pushTitleError }}
         </div>
       </section>
 

@@ -227,6 +227,13 @@ export function listWorkspaces(): Promise<WorkspaceInfo[]> {
   );
 }
 
+export function setPushTitle(title: string): Promise<AppSettingsStatus> {
+  return request("/api/settings/push-title", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
 export function setMemoryModel(modelId: string): Promise<AppSettingsStatus> {
   return request("/api/settings/memory-model", {
     method: "POST",

@@ -27,6 +27,7 @@ export interface StoredAppOptions {
   authSecret?: string;
   workspacesRoots?: string[];
   webPushSubject?: string;
+  pushTitle?: string;
   cronDailySessionStartTime?: string;
   braveSearchKey?: string;
   browserTailscaleSshDestination?: string;
@@ -46,6 +47,7 @@ export interface AppOptions {
   authSecret: string;
   workspacesRoots: string[];
   webPushSubject: string;
+  pushTitle: string;
   cronDailySessionStartTime: string;
   braveSearchKey?: string;
   browserTailscaleSshDestination?: string;
@@ -203,6 +205,7 @@ function normalizeStoredOptions(options: StoredAppOptions | undefined): AppOptio
         ? options.authSecret.trim()
         : createAuthSecret(),
     workspacesRoots,
+    pushTitle: options?.pushTitle ?? "Roy",
     webPushSubject:
       typeof options?.webPushSubject === "string" ? options.webPushSubject.trim() : "",
     cronDailySessionStartTime: normalizeDailySessionStartTime(options?.cronDailySessionStartTime),
@@ -329,6 +332,13 @@ export async function setDefaultModel(
     defaultThinkingLevel: normalizeThinkingLevel(defaultThinkingLevel),
   };
 
+  await writeStoredOptions(projectRoot, nextOptions);
+  return nextOptions;
+}
+
+export async function setPushTitle(projectRoot: string, pushTitle: string): Promise<AppOptions> {
+  const options = await loadAppOptions(projectRoot);
+  const nextOptions = { ...options, pushTitle };
   await writeStoredOptions(projectRoot, nextOptions);
   return nextOptions;
 }

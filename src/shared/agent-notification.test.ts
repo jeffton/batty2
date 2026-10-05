@@ -56,10 +56,13 @@ describe("markdownToNotificationText", () => {
 describe("buildAgentCompletionNotificationContent", () => {
   it("uses plain text for the notification body", () => {
     expect(
-      buildAgentCompletionNotificationContent(createSession("**Done** shipping the feature.")),
+      buildAgentCompletionNotificationContent(
+        createSession("**Done** shipping the feature."),
+        "Roy",
+      ),
     ).toEqual(
       expect.objectContaining({
-        title: "batty",
+        title: "Roy",
         body: "Done shipping the feature.",
         tag: "session-complete:session-1",
       }),

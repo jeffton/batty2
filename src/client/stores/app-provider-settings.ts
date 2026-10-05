@@ -4,6 +4,7 @@ import {
   getModels,
   getProviderAuthStatus,
   setAppearance as setAppearanceRequest,
+  setPushTitle as setPushTitleRequest,
   setBattyAgentsFile as setBattyAgentsFileRequest,
   setBraveSearchApiKey as setBraveSearchApiKeyRequest,
   setDefaultModel as setDefaultModelRequest,
@@ -56,6 +57,10 @@ export const providerSettingsActions = {
     thinkingLevel: string,
   ): Promise<void> {
     this.settings = await setDefaultModelRequest(modelId, thinkingLevel);
+  },
+
+  async setPushTitle(this: AppActionContext, title: string): Promise<void> {
+    this.settings = await setPushTitleRequest(title);
   },
 
   async setAppearance(this: AppActionContext, appearance: AppAppearance): Promise<void> {

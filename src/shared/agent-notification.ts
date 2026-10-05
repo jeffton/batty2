@@ -46,11 +46,6 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-export function workspaceLabelFromSession(session: Pick<SessionState, "cwd">): string {
-  const segments = session.cwd.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) ?? session.cwd;
-}
-
 function textFromBlocks(blocks: UiContentBlock[]): string {
   return normalizeNotificationText(
     blocks
@@ -102,15 +97,15 @@ export interface AgentCompletionNotificationContent {
 
 export function buildAgentCompletionNotificationContent(
   session: SessionState,
+  pushTitle: string,
 ): AgentCompletionNotificationContent {
   const assistant = latestAssistantMessage(session);
   const assistantText = assistantNotificationText(assistant);
   const stopReason = assistant?.errorMessage || assistant?.stopReason;
   const body = truncate(assistantText || stopReason || "", MAX_NOTIFICATION_BODY_LENGTH);
-  const workspaceLabel = workspaceLabelFromSession(session);
 
   return {
-    title: workspaceLabel,
+    title: pushTitle,
     body,
     tag: `session-complete:${session.sessionId}`,
     icon: NOTIFICATION_ICON,

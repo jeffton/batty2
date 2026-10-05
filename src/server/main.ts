@@ -11,6 +11,7 @@ import { loadConfig, resolveBattyDir, readEnvironmentFile, updateEnvironmentFile
 import {
   stateDirPath,
   setAppearance,
+  setPushTitle,
   setBraveSearchKey,
   setDefaultModel,
   setMemoryModel,
@@ -123,6 +124,7 @@ function settingsStatus() {
     memoryReasoning: process.env.BATTY_MEMORY_REASONING ?? "low",
     defaultThinkingLevel: config.defaultThinkingLevel,
     appearance: { title: config.appTitle, color: config.appColor },
+    pushTitle: config.pushTitle,
   };
 }
 app.get("/healthz", async () => ({ ok: true, mainSessionId: String(runtime.main.id), buildId }));
@@ -501,6 +503,13 @@ app.post<{ Body: { modelId: string; thinkingLevel: string } }>(
 app.post<{ Body: { modelId: string } }>("/api/settings/memory-model", async (request) => {
   const settings = await setMemoryModel(config.battyDir, request.body.modelId);
   config.memoryModel = settings.memoryModel;
+  return settingsStatus();
+});
+app.post<{ Body: { title: string } }>("/api/settings/push-title", async (request, reply) => {
+  const title = request.body.title.trim();
+  if (!title) return reply.code(400).send({ error: "Enter a push title" });
+  const settings = await setPushTitle(config.battyDir, title);
+  config.pushTitle = settings.pushTitle;
   return settingsStatus();
 });
 app.get("/api/settings/environment", async () => ({
