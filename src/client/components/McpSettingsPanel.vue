@@ -702,7 +702,7 @@ onBeforeUnmount(() => {
 .mcp-settings :deep(button.mcp-settings__icon-btn) {
   background: transparent;
   color: var(--color-text-muted);
-  padding-inline: 0.45rem;
+  padding: 0;
 }
 .mcp-settings__connection-actions button {
   background: transparent;

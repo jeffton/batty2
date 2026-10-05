@@ -71,7 +71,6 @@ const emit = defineEmits<{
 
 .model-config-selector__button {
   width: 100%;
-  min-height: 2.5rem;
   padding: 0 0.55rem;
   border: 0;
   border-radius: 0.5rem;

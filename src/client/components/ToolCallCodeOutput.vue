@@ -85,7 +85,7 @@ const emit = defineEmits<{
 
 .tool-call__overlay-output {
   position: relative;
-  padding-top: 0.4rem;
+  padding-top: calc(var(--button-size) + 0.4rem);
 }
 
 .tool-call__output-window {

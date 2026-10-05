@@ -148,6 +148,7 @@ onBeforeUnmount(removeFromStack);
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.35rem;
   flex-shrink: 0;
 }
@@ -161,8 +162,6 @@ onBeforeUnmount(removeFromStack);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
   padding: 0;
   border: 1px solid var(--color-border-soft);
   border-radius: 0.5rem;

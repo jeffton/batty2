@@ -1039,7 +1039,7 @@ function handlePopoverToggle(event: Event): void {
 :deep(.settings-popover__icon-btn) {
   background: transparent;
   color: var(--color-text-muted);
-  padding: 0.45rem;
+  padding: 0;
 }
 
 .settings-popover__badge {

@@ -50,6 +50,9 @@
 */
 
 :root {
+  --button-size: 44px;
+  --button-icon-size: 22px;
+
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
@@ -259,8 +262,43 @@ textarea {
   margin: 0;
 }
 
+button,
+.settings-popover__action,
+.settings-popover__link {
+  height: var(--button-size);
+  min-width: var(--button-size);
+  min-height: var(--button-size);
+  flex-shrink: 0;
+}
+
 button {
   cursor: pointer;
+}
+
+/* Icon actions share the same square target, including reusable delete controls. */
+.button--icon,
+.header__button,
+.usage,
+.message__copy-button,
+.transcript__jump-btn,
+.composer-queue__remove,
+.cron-popover__icon-btn,
+.delete-confirmation__button,
+.full-popover__close,
+.composer__icon-button,
+.shared-sites__header-btn,
+.streaming-stop-control__button,
+.settings-popover__icon-btn,
+.mcp-settings__icon-btn {
+  width: var(--button-size);
+  padding: 0;
+}
+
+button svg.lucide,
+.settings-popover__action svg.lucide {
+  width: var(--button-icon-size);
+  height: var(--button-icon-size);
+  flex-shrink: 0;
 }
 
 pre,

@@ -161,7 +161,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
-  min-height: 2rem;
   padding: 0.35rem 0.65rem;
   border: 1px solid var(--color-border-soft);
   border-radius: 0.5rem;
@@ -173,7 +172,6 @@ onBeforeUnmount(() => {
 }
 
 .shared-sites__header-btn {
-  width: 2rem;
   padding: 0;
 }
 

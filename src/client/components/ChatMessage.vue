@@ -640,8 +640,6 @@ onBeforeUnmount(() => {
   float: right;
   position: relative;
   z-index: 2;
-  min-width: 2rem;
-  min-height: 2rem;
   margin: -0.5rem -0.65rem 0.35rem 0.5rem;
   padding: 0;
   border: 0;

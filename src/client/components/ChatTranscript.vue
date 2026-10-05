@@ -234,8 +234,6 @@ defineExpose({
   bottom: 0.9rem;
   transform: translateX(-50%);
   z-index: 2;
-  min-width: 2.5rem;
-  min-height: 2.5rem;
   padding: 0;
   display: inline-flex;
   align-items: center;

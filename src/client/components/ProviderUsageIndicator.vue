@@ -115,8 +115,6 @@ onUnmounted(() => clearInterval(clock));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--header-target-size, 48px);
-  height: var(--header-target-size, 48px);
   flex-shrink: 0;
   padding: 0;
   border: 0;

@@ -32,6 +32,7 @@ function thinkingLabel(value: string): string {
 <style scoped>
 .thinking-picker {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0.15rem;
   background: var(--color-bg-elevated);

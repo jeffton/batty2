@@ -94,7 +94,6 @@ async function logout() {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  --header-target-size: 48px;
   min-width: 0;
   padding: calc(var(--safe-area-top) + 0.5rem) calc(var(--safe-area-right) + 0.65rem) 0.5rem
     calc(var(--safe-area-left) + 0.65rem);
@@ -117,8 +116,6 @@ async function logout() {
 .header__button {
   display: grid;
   place-items: center;
-  width: var(--header-target-size);
-  height: var(--header-target-size);
   flex-shrink: 0;
   padding: 0;
   border: 0;
@@ -162,7 +159,6 @@ async function logout() {
 }
 @media (max-width: 360px) {
   .header {
-    --header-target-size: 44px;
     gap: 2px;
     padding-right: calc(var(--safe-area-right) + 4px);
     padding-left: calc(var(--safe-area-left) + 4px);

@@ -90,8 +90,6 @@ function queuedPromptLabel(prompt: QueuedPrompt): string {
 }
 
 .composer-queue__remove {
-  width: 2rem;
-  height: 2rem;
   padding: 0;
   border: 0;
   border-radius: 0.45rem;

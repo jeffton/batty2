@@ -529,6 +529,10 @@ defineExpose({ clear, restore });
 }
 
 .composer__chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border: 0;
   background: var(--color-bg-elevated);
   color: inherit;
@@ -572,15 +576,13 @@ defineExpose({ clear, restore });
 
 .composer__actions-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.4rem;
   padding: 0 calc(var(--safe-area-right) + 0.4rem) 0 calc(var(--safe-area-left) + 0.4rem);
 }
 
 .composer__icon-button {
-  min-width: 2.5rem;
-  min-height: 2.5rem;
   padding: 0;
   border: 0;
   border-radius: 0.5rem;
@@ -629,7 +631,24 @@ defineExpose({ clear, restore });
 }
 
 .composer__send-actions {
+  min-width: 0;
   justify-content: flex-end;
   justify-self: end;
+}
+
+@media (max-width: 540px) {
+  .composer__actions-row:has(.composer__stream-actions) {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .composer__stream-actions {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .composer__actions-row:has(.composer__stream-actions) > .composer__icon-button,
+  .composer__actions-row:has(.composer__stream-actions) > .composer__send-actions {
+    grid-row: 2;
+  }
 }
 </style>

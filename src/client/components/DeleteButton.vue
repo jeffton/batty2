@@ -29,6 +29,7 @@ function confirm(): void {
 <template>
   <button
     v-bind="$attrs"
+    class="button--icon"
     type="button"
     :aria-label="props.label"
     :disabled="props.disabled"
@@ -98,8 +99,6 @@ function confirm(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
   padding: 0;
   border: 0;
   border-radius: 0.4rem;

@@ -91,8 +91,6 @@ function triggerClick(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 2.5rem;
-  min-height: 2.5rem;
   padding: 0;
   border: 0;
   border-radius: 0.5rem;
