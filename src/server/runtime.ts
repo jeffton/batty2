@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -177,6 +178,8 @@ export class Runtime {
     const orchestration = createOrchestration(config);
     const memory = createMemory(
       {
+        noiseBackupDir: path.join(dir, "memory-backups"),
+        rebuildRequested: existsSync(path.join(dir, "memory-rebuild.request")),
         get memoryModel() {
           return config.memoryModel;
         },

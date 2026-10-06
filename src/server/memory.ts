@@ -1,5 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { createHash } from "node:crypto";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { BACKGROUND_CONTEXT, withCancel, awaitWithContext } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import { Type, type Message, type Models } from "@earendil-works/pi-ai";
@@ -38,7 +40,22 @@ export type MemoryLeaf = {
   ordinal: number;
 };
 export type Part = { start: number; count: number };
-type MemoryIndex = { count: number; cursor: number; viewCount: number; parts: Part[] };
+type MemoryIndex = {
+  count: number;
+  cursor: number;
+  viewCount: number;
+  parts: Part[];
+  generation?: number;
+};
+type MemoryRebuild = { generation: number; total: number; status: "pending" | "complete" };
+const Rebuild = defineDoc<MemoryRebuild>({
+  kind: "batty.memory-rebuild",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ generation: 0, total: 0, status: "complete" }),
+});
 export const MemoryIndexDoc = defineDoc<MemoryIndex>({
   kind: "batty.memory-index",
   version: 1,
@@ -59,7 +76,7 @@ const Leaves = defineDocFamily<MemoryLeaf, MemoryLeaf>({
   fork: "initial",
   initial: (leaf) => leaf,
 });
-const Nodes = defineDocFamily<{ text: string }, { text: string }>({
+export const MemoryNodesDoc = defineDocFamily<{ text: string }, { text: string }>({
   kind: "batty.memory-node",
   version: 1,
   family: true,
@@ -68,6 +85,7 @@ const Nodes = defineDocFamily<{ text: string }, { text: string }>({
   fork: "initial",
   initial: (node) => node,
 });
+const Nodes = MemoryNodesDoc;
 const Packets = defineDocFamily<
   { view: string; boundary: number },
   { view: string; boundary: number }
@@ -136,6 +154,66 @@ export function projectEntry(entry: EntryRecord): MemoryLeaf[] {
   return leaves;
 }
 const key = (part: Part) => `${part.start}+${part.count}`;
+
+// Keep archive positions even for silent turns: zoom/date must retain their IDs.
+export function isMemoryNoise(leaf: Pick<MemoryLeaf, "kind" | "text">): boolean {
+  if (leaf.kind === "talk") return leaf.text.trim() === "NO_REPLY";
+  return (
+    leaf.kind === "note" &&
+    /^Runtime (?:cron|subagent): \[(?:cron|subagent) \d+ result\]\s*NO_REPLY$/.test(
+      leaf.text.trim(),
+    )
+  );
+}
+
+export function stripNoiseClauses(text: string): string {
+  // Only complete tagged clauses, never arbitrary mentions of the sentinel.
+  return text
+    .split(/;\s*|\n/)
+    .filter(
+      (clause) =>
+        !/^talk:\s*(?:\d+\s*[×x]\s*)?`?NO_REPLY`?(?:\s*[×x]\s*\d+)?\.?$/.test(clause.trim()) &&
+        !/^note:\s*Runtime (?:cron|subagent): \[(?:cron|subagent) \d+ result\]\s*NO_REPLY\.?$/.test(
+          clause.trim(),
+        ),
+    )
+    .join("; ");
+}
+
+export function planNoiseCleanup(
+  leaves: ReadonlyMap<number, MemoryLeaf>,
+  nodes: ReadonlyMap<string, string>,
+) {
+  const excluded = [...leaves].filter(([, leaf]) => isMemoryNoise(leaf)).map(([id]) => id);
+  const affected = new Set<string>();
+  for (const id of excluded) {
+    for (let count = 1; count <= leaves.size; count *= 2) {
+      const name = key({ start: Math.floor(id / count) * count, count });
+      if (nodes.has(name)) affected.add(name);
+    }
+  }
+  const updates = new Map<string, string>();
+  for (const name of [...affected].sort(
+    (a, b) => Number(a.split("+")[1]) - Number(b.split("+")[1]),
+  )) {
+    const [start, count] = name.split("+").map(Number) as [number, number];
+    let text = "";
+    if (count > 1) {
+      const child = (id: number) => {
+        const name = key({ start: id, count: count / 2 });
+        return updates.get(name) ?? nodes.get(name)!;
+      };
+      const left = child(start);
+      const right = child(start + count / 2);
+      // Reuse intact summaries instead of paying to regenerate the whole tree.
+      text = !left ? right : !right ? left : stripNoiseClauses(nodes.get(name)!);
+      // A lossy old parent may have kept only noise from a mixed subtree.
+      if (!text && (left || right)) text = [left, right].filter(Boolean).join("; ");
+    }
+    if (text !== nodes.get(name)) updates.set(name, text);
+  }
+  return { excluded, affected: affected.size, updates };
+}
 export const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 export function fitView(
   parts: Part[],
@@ -179,7 +257,13 @@ export function renderView(
   nodes: ReadonlyMap<string, string>,
   ids = true,
 ): string {
-  return `<chat>\n${parts.map((part) => `${ids ? `${key(part)}|` : ""}${(nodes.get(key(part)) ?? "(not summarized yet: zoom it)").replaceAll("\n", " ")}`).join("\n")}\n</chat>`;
+  return `<chat>\n${parts
+    .filter((part) => nodes.get(key(part)) !== "")
+    .map(
+      (part) =>
+        `${ids ? `${key(part)}|` : ""}${(nodes.get(key(part)) ?? "(not summarized yet: zoom it)").replaceAll("\n", " ")}`,
+    )
+    .join("\n")}\n</chat>`;
 }
 export const COMPACT_PROMPT = `You write the memory of Batty, an AI agent that works for one user in one
 endless chat, through tools and subagents. Each message has a kind: user
@@ -296,12 +380,15 @@ export type MemoryConfig = {
   onError?: (error: unknown) => void;
   onProgress?: (progress: { completed: number; total: number; nodes: number }) => void;
   compress?: (source: string, signal?: AbortSignal) => Promise<string>;
+  noiseBackupDir?: string;
+  rebuildRequested?: boolean;
 };
 
 export function createMemory(config: MemoryConfig, models: Models) {
   let harness: Harness;
   let main: Conversation;
   let index: MemoryIndex;
+  let loaded = false;
   let rootSessionId: string;
   let lastError: string | undefined;
   const background = withCancel(BACKGROUND_CONTEXT);
@@ -311,6 +398,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
   const nodes = new Map<string, string>();
   const leaves = new Map<number, MemoryLeaf>();
   let serial: Promise<unknown> = Promise.resolve();
+  let rebuilding: Promise<void> | undefined;
+  let rebuildProgress:
+    | { generation: number; total: number; completed: number; excluded: number }
+    | undefined;
+  const storedKey = (part: Part, generation = index.generation ?? 0) =>
+    generation === 0 ? key(part) : `g${generation}:${key(part)}`;
   const exclusive = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = serial.then(operation);
     serial = result.catch(() => undefined);
@@ -323,7 +416,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
   const nodeBytes = config.nodeBytes ?? NODE_BYTES;
   const budget = config.viewBytes ?? VIEW_BYTES;
   async function load(context: Context) {
-    if (index) return;
+    if (loaded) return;
     const stored = await harness.snapshot(Index, main.id, context);
     index = stored ? structuredClone(stored) : { count: 0, cursor: 0, viewCount: 0, parts: [] };
     for (let i = 0; i < index.count; i++) {
@@ -331,10 +424,47 @@ export function createMemory(config: MemoryConfig, models: Models) {
     }
     for (let count = 1; count <= index.count; count *= 2) {
       for (let start = 0; start + count <= index.count; start += count) {
-        const node = await harness.snapshot(Nodes, main.id, key({ start, count }), context);
+        const node = await harness.snapshot(Nodes, main.id, storedKey({ start, count }), context);
         if (node) nodes.set(key({ start, count }), node.text);
       }
     }
+    const cleanup = planNoiseCleanup(leaves, nodes);
+    if (cleanup.updates.size) {
+      const counts = {
+        excluded: cleanup.excluded.length,
+        affected: cleanup.affected,
+        rebuilt: cleanup.updates.size,
+      };
+      console.log("OptChat noise cleanup dry-run:", counts);
+      if (config.noiseBackupDir) {
+        await mkdir(config.noiseBackupDir, { recursive: true, mode: 0o700 });
+        await chmod(config.noiseBackupDir, 0o700);
+        await writeFile(
+          path.join(config.noiseBackupDir, `noise-${main.id}-${Date.now()}.json`),
+          JSON.stringify({
+            counts,
+            index,
+            excluded: cleanup.excluded,
+            nodes: [...cleanup.updates.keys()].map((name) => [name, nodes.get(name)]),
+          }),
+          { mode: 0o600, flag: "wx" },
+        );
+      }
+      await main.commit(async (tx) => {
+        for (const [name, text] of cleanup.updates)
+          (
+            await tx.doc(
+              Nodes,
+              main.id,
+              storedKey({ start: Number(name.split("+")[0]), count: Number(name.split("+")[1]) }),
+              { text },
+            )
+          ).text = text;
+      }, context);
+      for (const [name, text] of cleanup.updates) nodes.set(name, text);
+      console.log("OptChat noise cleanup applied:", counts);
+    }
+    loaded = true;
   }
   async function syncTo(maximum: number, context: Context) {
     await load(context);
@@ -378,7 +508,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
     }
   }
   async function compress(source: string, context: Context) {
-    if (utf8Bytes(source) <= nodeBytes) return source;
+    if (!source || utf8Bytes(source) <= nodeBytes) return source;
     for (;;) {
       context.abortSignal?.throwIfAborted();
       try {
@@ -454,9 +584,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
       part.count === 1
         ? `${leaves.get(part.start)!.kind}: ${leaves.get(part.start)!.text}`
         : `${nodes.get(key({ start: part.start, count: part.count / 2 }))!}\n${nodes.get(key({ start: part.start + part.count / 2, count: part.count / 2 }))!}`;
-    const text = await compress(source, context);
+    const text =
+      part.count === 1 && isMemoryNoise(leaves.get(part.start)!)
+        ? ""
+        : await compress(source.trim(), context);
     const committed = await main.commit(async (tx) => {
-      await tx.doc(Nodes, main.id, key(part), { text });
+      (await tx.doc(Nodes, main.id, storedKey(part), { text })).text = text;
       const draft = await tx.doc(Index, main.id);
       if (part.count === 1 && part.start === draft.viewCount) {
         draft.parts.push(part);
@@ -533,6 +666,125 @@ export function createMemory(config: MemoryConfig, models: Models) {
       while (running.size) await Promise.all(running.values());
     }
   }
+  async function rebuildAll() {
+    const context = background.context;
+    const job = await exclusive(async () => {
+      await load(context);
+      await syncTo(Number.MAX_SAFE_INTEGER, context);
+      const existing = await harness.snapshot(Rebuild, main.id, context);
+      if (existing) return existing.status === "pending" ? structuredClone(existing) : undefined;
+      const candidate: MemoryRebuild = {
+        generation: (index.generation ?? 0) + 1,
+        total: index.count,
+        status: "pending",
+      };
+      if (config.noiseBackupDir) {
+        await mkdir(config.noiseBackupDir, { recursive: true, mode: 0o700 });
+        await chmod(config.noiseBackupDir, 0o700);
+        await writeFile(
+          path.join(config.noiseBackupDir, `rebuild-${main.id}-${Date.now()}.json`),
+          JSON.stringify({ index, nodes: [...nodes] }),
+          { mode: 0o600, flag: "wx" },
+        );
+      }
+      const excluded = [...leaves.values()].filter(isMemoryNoise).length;
+      const longLeaves = [...leaves.values()].filter(
+        (leaf) => !isMemoryNoise(leaf) && utf8Bytes(`${leaf.kind}: ${leaf.text}`) > nodeBytes,
+      ).length;
+      console.log("OptChat full rebuild dry-run:", {
+        total: candidate.total,
+        excluded,
+        longLeaves,
+        modelCallsUpperBound: longLeaves + candidate.total - 1,
+        generation: candidate.generation,
+      });
+      await main.commit(
+        async (tx) => Object.assign(await tx.doc(Rebuild, main.id), candidate),
+        context,
+      );
+      return candidate;
+    });
+    if (!job) return;
+    const fresh = new Map<string, string>();
+    const sourceLeaves = new Map([...leaves].filter(([id]) => id < job.total));
+    rebuildProgress = {
+      generation: job.generation,
+      total: job.total,
+      completed: 0,
+      excluded: [...sourceLeaves.values()].filter(isMemoryNoise).length,
+    };
+    const buildFresh = async (part: Part) => {
+      const name = storedKey(part, job.generation);
+      const existing = await harness.snapshot(Nodes, main.id, name, context);
+      if (existing) {
+        fresh.set(key(part), existing.text);
+        if (part.count === 1) rebuildProgress!.completed++;
+        return;
+      }
+      const leaf = sourceLeaves.get(part.start)!;
+      const source =
+        part.count === 1
+          ? isMemoryNoise(leaf)
+            ? ""
+            : `${leaf.kind}: ${leaf.text}`
+          : [
+              fresh.get(key({ start: part.start, count: part.count / 2 }))!,
+              fresh.get(key({ start: part.start + part.count / 2, count: part.count / 2 }))!,
+            ]
+              .filter(Boolean)
+              .join("\n");
+      const text = await compress(source, context);
+      await main.commit(async (tx) => {
+        await tx.doc(Nodes, main.id, name, { text });
+      }, context);
+      fresh.set(key(part), text);
+      if (part.count === 1) {
+        rebuildProgress!.completed++;
+        if (rebuildProgress!.completed % 100 === 0)
+          console.log("OptChat full rebuild progress:", rebuildProgress);
+      }
+    };
+    // A complete level is the only input to the next. Seven bounded workers,
+    // and generation-scoped durable nodes, make restart replay cheap and safe.
+    for (let count = 1; count <= job.total; count *= 2) {
+      let next = 0;
+      const workers = Array.from({ length: 7 }, async () => {
+        for (;;) {
+          context.abortSignal?.throwIfAborted();
+          const start = next;
+          next += count;
+          if (start + count > job.total) return;
+          await buildFresh({ start, count });
+        }
+      });
+      const results = await Promise.allSettled(workers);
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    }
+    let parts: Part[] = [];
+    for (let start = 0; start < job.total; start++) {
+      parts.push({ start, count: 1 });
+      parts = fitView(parts, start + 1, fresh, budget);
+    }
+    await exclusive(async () => {
+      await main.commit(async (tx) => {
+        const draft = await tx.doc(Index, main.id);
+        draft.generation = job.generation;
+        draft.viewCount = job.total;
+        draft.parts = parts;
+        (await tx.doc(Rebuild, main.id)).status = "complete";
+      }, context);
+      nodes.clear();
+      for (const [name, text] of fresh) nodes.set(name, text);
+      index.generation = job.generation;
+      index.viewCount = job.total;
+      index.parts = parts;
+      console.log("OptChat full rebuild activated:", { ...rebuildProgress, nodes: fresh.size });
+      // Includes messages admitted while the isolated generation was building.
+      await syncTo(Number.MAX_SAFE_INTEGER, context);
+      await settleNow(context);
+    });
+  }
   const sync = (context = BACKGROUND_CONTEXT) =>
     exclusive(async () => {
       await syncTo(Number.MAX_SAFE_INTEGER, context);
@@ -567,7 +819,10 @@ export function createMemory(config: MemoryConfig, models: Models) {
       .join("\n");
   }
   function browserSummary(part: Part) {
-    const summary = nodes.get(key(part)) ?? "(not summarized yet: zoom it)";
+    const summary =
+      nodes.get(key(part)) === ""
+        ? "(silent runtime noise excluded; original available below)"
+        : (nodes.get(key(part)) ?? "(not summarized yet: zoom it)");
     return {
       id: part.start,
       count: part.count,
@@ -774,6 +1029,11 @@ export function createMemory(config: MemoryConfig, models: Models) {
       });
       unsubscribeClose = harness.subscribeClose(() => background.cancel());
       start(cutoff);
+      if (config.rebuildRequested) {
+        rebuilding = rebuildAll().catch((error) => {
+          if (!background.context.abortSignal?.aborted) report(error);
+        });
+      }
     },
     async contextFor(
       parentId: ConversationId,
@@ -828,7 +1088,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
     status() {
       const totalLeaves = index?.count ?? 0;
       const builtLeaves = index?.viewCount ?? 0;
-      return { totalLeaves, builtLeaves, pending: totalLeaves - builtLeaves, error: lastError };
+      return {
+        totalLeaves,
+        builtLeaves,
+        pending: totalLeaves - builtLeaves,
+        error: lastError,
+        ...(rebuildProgress ? { rebuild: rebuildProgress } : {}),
+      };
     },
     validateRequest(request: { messages: readonly Message[] }, options?: { sessionId?: string }) {
       if (options?.sessionId !== rootSessionId) return;
@@ -844,7 +1110,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
       unsubscribe();
       unsubscribeClose();
       background.cancel();
+      await rebuilding;
       await serial;
+    },
+    async rebuild() {
+      rebuilding ??= rebuildAll();
+      return rebuilding;
     },
     sync,
     settle,

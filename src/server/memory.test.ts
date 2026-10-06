@@ -21,7 +21,14 @@ import {
   type EntryRecord,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createMemory, fitView, projectEntry, utf8Bytes } from "./memory.js";
+import {
+  createMemory,
+  fitView,
+  projectEntry,
+  utf8Bytes,
+  MemoryNodesDoc,
+  type MemoryConfig,
+} from "./memory.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -118,7 +125,7 @@ async function fixture() {
   const faux = fauxProvider();
   models.setProvider(faux.provider);
   let compressions = 0;
-  const open = async () => {
+  const open = async (options: Partial<MemoryConfig> = {}) => {
     const memory = createMemory(
       {
         nodeBytes: 80,
@@ -127,6 +134,7 @@ async function fixture() {
           compressions++;
           return `summary ${source.slice(0, 45)}`;
         },
+        ...options,
       },
       models,
     );
@@ -170,6 +178,229 @@ test("projection, immutable nodes and exact zoom survive reopen without resummar
   expect(fixtureState.compressions()).toBe(calls);
   expect(await state.memory.zoom(0, 2)).toContain("1+1|");
   await expect(state.memory.zoom(1, 2)).rejects.toThrow("No line");
+});
+
+test("silent old and future turns keep IDs and originals but leave prepared memory", async () => {
+  const fixtureState = await fixture();
+  let state = await fixtureState.open();
+  await state.main.commit(async (tx) => {
+    await tx.appendEntry(state.main.id, {
+      kind: "pi.assistant",
+      model: [fauxAssistantMessage([fauxText("NO_REPLY")])],
+    });
+    await tx.appendEntry(state.main.id, {
+      kind: "pi.user",
+      model: [{ role: "user", content: "keep useful decision", timestamp: 123 }],
+    });
+  }, context);
+  expect(await state.memory.prepare()).not.toContain("NO_REPLY");
+  const original = await state.memory.zoom(0, 1);
+  const originalDate = await state.memory.date(0);
+  const sourceEntries = (await state.main.entries({}, 100, undefined, context)).items;
+  await state.main.commit(async (tx) => {
+    (await tx.doc(MemoryNodesDoc, state.main.id, "0+1", { text: "" })).text = "talk: NO_REPLY";
+    (await tx.doc(MemoryNodesDoc, state.main.id, "0+2", { text: "" })).text =
+      "talk: NO_REPLY; user: useful";
+  }, context);
+  const calls = fixtureState.compressions();
+  await state.memory.close();
+  await state.harness.close(context);
+  state = await fixtureState.open();
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  expect(await state.memory.prepare()).not.toContain("NO_REPLY");
+  expect(fixtureState.compressions()).toBe(calls);
+  expect(await state.memory.zoom(0, 1)).toBe(original);
+  expect(await state.memory.date(0)).toBe(originalDate);
+  expect(await state.memory.zoom(1, 1)).toContain("keep useful decision");
+  expect((await state.main.entries({}, 100, undefined, context)).items).toEqual(sourceEntries);
+  expect((await state.memory.browserNode(0, 2)).children[0]?.summary).toContain("noise excluded");
+  expect((await state.memory.browserNode(0, 1)).text).toContain("NO_REPLY");
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.assistant",
+        model: [fauxAssistantMessage([fauxText("NO_REPLY")])],
+      }),
+    context,
+  );
+  expect(await state.memory.prepare()).not.toContain("NO_REPLY");
+  expect(await state.memory.zoom(2, 1)).toContain("NO_REPLY");
+  expect(await state.memory.zoom(1, 1)).toContain("keep useful decision");
+});
+
+test("full rebuild derives a fresh generation only from originals, preserves IDs and catches up tail", async () => {
+  const f = await fixture();
+  const state = await f.open();
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  await state.main.commit(async (tx) => {
+    await tx.appendEntry(state.main.id, {
+      kind: "pi.assistant",
+      model: [fauxAssistantMessage([fauxText("NO_REPLY")])],
+    });
+    for (let i = 0; i < 3; i++)
+      await tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: `source ${i} ${"x".repeat(120)}`, timestamp: i + 1 }],
+      });
+  }, context);
+  await state.memory.prepare();
+  const exact = await state.memory.zoom(1, 1);
+  await state.main.commit(async (tx) => {
+    (await tx.doc(MemoryNodesDoc, state.main.id, "1+1", { text: "" })).text = "CONTAMINATED";
+    (await tx.doc(MemoryNodesDoc, state.main.id, "0+4", { text: "" })).text = "CONTAMINATED";
+  }, context);
+  await state.memory.rebuild();
+  expect(await state.memory.prepare()).not.toContain("CONTAMINATED");
+  expect(await state.memory.zoom(1, 1)).toBe(exact);
+  expect(await state.memory.zoom(0, 1)).toContain("NO_REPLY");
+  expect(await state.memory.prepare()).not.toContain("NO_REPLY");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:1+1", context))?.text,
+  ).toContain("source 0");
+  // The old generation is retained, rather than destructively edited by rebuild.
+  expect((await state.harness.snapshot(MemoryNodesDoc, state.main.id, "1+1", context))?.text).toBe(
+    "CONTAMINATED",
+  );
+  const calls = f.compressions();
+  await state.memory.rebuild();
+  expect(f.compressions()).toBe(calls);
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "new decision", timestamp: 42 }],
+      }),
+    context,
+  );
+  await state.memory.prepare();
+  expect(await state.memory.zoom(4, 1)).toContain("new decision");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:4+1", context))?.text,
+  ).toContain("new decision");
+});
+
+test("generation publication includes originals admitted while rebuilding and survives reopen", async () => {
+  const f = await fixture();
+  let gated = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let state = await f.open({
+    compress: async (source) => {
+      if (gated && source.startsWith("user: older")) {
+        entered();
+        await gate;
+      }
+      return `summary ${source.slice(0, 45)}`;
+    },
+  });
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: `older ${"x".repeat(120)}`, timestamp: 1 }],
+      }),
+    context,
+  );
+  await state.memory.prepare();
+  const date = await state.memory.date(0);
+  gated = true;
+  const rebuilding = state.memory.rebuild();
+  await ready;
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "concurrent new decision", timestamp: 2 }],
+      }),
+    context,
+  );
+  // Live old generation remains usable and can admit new messages throughout.
+  expect(await state.memory.prepare()).toContain("concurrent new decision");
+  release();
+  await rebuilding;
+  expect(await state.memory.date(0)).toBe(date);
+  expect(await state.memory.zoom(1, 1)).toContain("concurrent new decision");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:1+1", context))?.text,
+  ).toContain("concurrent new decision");
+  await state.memory.close();
+  await state.harness.close(context);
+  state = await f.open();
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  expect(await state.memory.prepare()).toContain("concurrent new decision");
+  expect(await state.memory.zoom(1, 1)).toContain("concurrent new decision");
+  expect(await state.memory.date(0)).toBe(date);
+});
+
+test("interrupted rebuild resumes persisted fresh nodes without publishing a partial generation", async () => {
+  const f = await fixture();
+  let state = await f.open();
+  await state.main.commit(async (tx) => {
+    await tx.appendEntry(state.main.id, {
+      kind: "pi.assistant",
+      model: [fauxAssistantMessage([fauxText("NO_REPLY")])],
+    });
+    await tx.appendEntry(state.main.id, {
+      kind: "pi.user",
+      model: [{ role: "user", content: "x".repeat(200), timestamp: 1 }],
+    });
+  }, context);
+  const before = await state.memory.prepare();
+  await state.memory.close();
+  await state.harness.close(context);
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  state = await f.open({
+    compress: async (_, signal) => {
+      entered();
+      await new Promise((_, reject) =>
+        signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }),
+      );
+      return "unreachable";
+    },
+  });
+  const pending = state.memory.rebuild().catch(() => undefined);
+  await enteredPromise;
+  expect(
+    state.memory
+      .browserOverview()
+      .nodes.map((node) => node.summary)
+      .join("\n"),
+  ).toContain("summary");
+  await state.memory.close().catch(() => undefined);
+  await pending;
+  await state.harness.close(context);
+  state = await f.open();
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  expect(await state.memory.prepare()).toBe(before);
+  await state.memory.rebuild();
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context))?.text,
+  ).toBe("");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:1+1", context))?.text,
+  ).toContain("summary");
+  expect(await state.memory.zoom(1, 1)).toContain("x".repeat(200));
 });
 
 test("each run starts from a persisted view and the full new input, never old raw turns", async () => {
