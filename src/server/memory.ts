@@ -202,9 +202,12 @@ into the two lines it was made from, down to the messages, but only when
 the line's words show that what it needs is inside: what your line omits
 is lost to Batty and to every line above.
 
-<chat> is Batty's view up to the last message of your stretch: use it to
-understand what was going on, to resolve references, and to recover
-detail your input lost.
+The supplied source is your only factual input: either one original message
+or the two child summaries being merged. Every claim must be supported by
+that source. Do not infer missing details, resolve references from outside
+it, or import background knowledge. Keep unknowns and unresolved references
+unknown. Preserve who said what, and distinguish corrections from the claims
+they correct; do not turn a proposal, report or uncertainty into a fact.
 
 Goal: let Batty work later as well as if it remembered the whole stretch.
 Space is scarce, so it goes by value:
@@ -292,7 +295,7 @@ export type MemoryConfig = {
   retryMs?: number;
   onError?: (error: unknown) => void;
   onProgress?: (progress: { completed: number; total: number; nodes: number }) => void;
-  compress?: (source: string, preceding: string, signal?: AbortSignal) => Promise<string>;
+  compress?: (source: string, signal?: AbortSignal) => Promise<string>;
 };
 
 export function createMemory(config: MemoryConfig, models: Models) {
@@ -374,13 +377,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }
     }
   }
-  async function compress(source: string, preceding: string, context: Context) {
+  async function compress(source: string, context: Context) {
     if (utf8Bytes(source) <= nodeBytes) return source;
     for (;;) {
       context.abortSignal?.throwIfAborted();
       try {
         if (config.compress) {
-          const result = (await config.compress(source, preceding, context.abortSignal)).trim();
+          const result = (await config.compress(source, context.abortSignal)).trim();
           if (!result) throw new Error("Empty memory summary");
           return result;
         }
@@ -398,7 +401,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
           { role: "system", content: COMPACT_PROMPT, timestamp: 0 },
           {
             role: "user",
-            content: `${preceding}\nFor scale, this line is exactly ${nodeBytes} ASCII bytes:\n${"user: chose immutable history; echo: saved source, names, paths, decisions and why; talk: background tasks report findings, memory preserves exact originals. ".repeat(Math.ceil(nodeBytes / 100)).slice(0, nodeBytes)}\nCompress this message or merge these two child lines into one line of at most ${nodeBytes} UTF-8 bytes:\n${source}`,
+            content: `Compress this message or merge these two child lines into one line of at most ${nodeBytes} UTF-8 bytes. Use only the source below:\n${source}`,
             timestamp: 0,
           },
         ];
@@ -451,13 +454,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       part.count === 1
         ? `${leaves.get(part.start)!.kind}: ${leaves.get(part.start)!.text}`
         : `${nodes.get(key({ start: part.start, count: part.count / 2 }))!}\n${nodes.get(key({ start: part.start + part.count / 2, count: part.count / 2 }))!}`;
-    const end = part.count === 1 ? part.start : part.start + part.count;
-    const preceding = renderView(
-      index.parts.filter((p) => p.start + p.count <= end),
-      nodes,
-      false,
-    );
-    const text = await compress(source, preceding, context);
+    const text = await compress(source, context);
     const committed = await main.commit(async (tx) => {
       await tx.doc(Nodes, main.id, key(part), { text });
       const draft = await tx.doc(Index, main.id);
