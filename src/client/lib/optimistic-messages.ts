@@ -4,6 +4,7 @@ export type OptimisticUserMessage = Extract<UiMessage, { role: "user" }>;
 export type PendingOptimisticMessage = {
   message: OptimisticUserMessage;
   clientMessageId: string;
+  showInTranscript: boolean;
 };
 
 type OptimisticSession = Pick<SessionState, "messages" | "queuedPrompts" | "updatedAt">;
@@ -25,25 +26,12 @@ export function reconcileOptimisticMessages(
   return pending.filter((item) => !acknowledged.has(item.clientMessageId));
 }
 
-// Queued messages survive refresh without persisting pre-upload display text or
-// pretending attachment filenames are recoverable File objects.
+// The inbox owns queued submissions. Only genuine sends belong in the transcript.
 export function optimisticTranscriptMessages(
   pending: PendingOptimisticMessage[],
   session: OptimisticSession,
 ): OptimisticUserMessage[] {
-  const confirmed = new Set(
-    session.messages.flatMap((message) =>
-      message.role === "user" && message.clientMessageId ? [message.clientMessageId] : [],
-    ),
-  );
-  const queued = (session.queuedPrompts ?? [])
-    .filter((prompt) => !prompt.clientMessageId || !confirmed.has(prompt.clientMessageId))
-    .map((prompt): OptimisticUserMessage => ({
-      id: `queued-user-${prompt.index}`,
-      role: "user",
-      timestamp: session.updatedAt,
-      clientMessageId: prompt.clientMessageId,
-      blocks: [{ type: "text", text: prompt.text }],
-    }));
-  return [...queued, ...reconcileOptimisticMessages(pending, session).map((item) => item.message)];
+  return reconcileOptimisticMessages(pending, session)
+    .filter((item) => item.showInTranscript)
+    .map((item) => item.message);
 }

@@ -136,7 +136,7 @@ function addOptimisticMessage(
     ...optimisticMessagesBySessionId.value,
     [sessionId]: [
       ...(optimisticMessagesBySessionId.value[sessionId] ?? []),
-      { message, clientMessageId },
+      { message, clientMessageId, showInTranscript: !store.activeSession?.isStreaming },
     ],
   };
   return message.id;
@@ -184,6 +184,13 @@ function wasPromptAccepted(sessionId: string, clientMessageId: string): boolean 
       (message) => "clientMessageId" in message && message.clientMessageId === clientMessageId,
     )
   );
+}
+
+function setOptimisticDisposition(sessionId: string, optimisticId: string, started: boolean): void {
+  const item = optimisticMessagesBySessionId.value[sessionId]?.find(
+    (candidate) => candidate.message.id === optimisticId,
+  );
+  if (item) item.showInTranscript = started;
 }
 
 async function reconcileQueuedReceipt(sessionId: string, optimisticId: string): Promise<void> {
@@ -238,6 +245,9 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
   try {
     const receipt = await store.sendPrompt(text, files, clientMessageId);
     // A started receipt can precede SSE publishing the transcript message.
+    if (sessionId && optimisticId) {
+      setOptimisticDisposition(sessionId, optimisticId, receipt.disposition === "started");
+    }
     clearPromptRetry(sessionId!, clientMessageId);
     if (receipt.disposition === "queued" && sessionId && optimisticId) {
       await reconcileQueuedReceipt(sessionId, optimisticId);
@@ -311,6 +321,9 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
   }
   try {
     const receipt = await store.steerPrompt(text, files, clientMessageId);
+    if (sessionId && optimisticId) {
+      setOptimisticDisposition(sessionId, optimisticId, receipt.disposition === "started");
+    }
     clearPromptRetry(sessionId!, clientMessageId);
     if (receipt.disposition === "queued" && sessionId && optimisticId) {
       await reconcileQueuedReceipt(sessionId, optimisticId);

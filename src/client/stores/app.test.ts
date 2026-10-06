@@ -370,7 +370,7 @@ describe("optimistic prompt reconciliation", () => {
       streamId: "generation-a",
     });
     await flushPromises();
-    expect(pending()).toHaveLength(1);
+    expect(pending()).toHaveLength(0);
     store.activeSession = { ...state(4), sessionId: "other" };
     await flushPromises();
     expect(pending()).toHaveLength(0);
@@ -379,13 +379,15 @@ describe("optimistic prompt reconciliation", () => {
       queuedPrompts: [{ kind: "followUp", index: 0, text: "Look at this", clientMessageId }],
     };
     await flushPromises();
-    expect(pending()).toHaveLength(1);
+    expect(pending()).toHaveLength(0);
     const confirmed = {
       ...state(6),
       totalMessageCount: 1,
       messages: [
         {
-          ...pending()[0],
+          role: "user" as const,
+          timestamp: 6,
+          clientMessageId,
           id: "server-user",
           blocks: [{ type: "text" as const, text: "Look at this" }],
         },
@@ -402,7 +404,7 @@ describe("optimistic prompt reconciliation", () => {
     expect(store.activeSession?.messages).toHaveLength(1);
   });
 
-  it("renders accepted queued attachments after reload and reconciles by ID, not text", async () => {
+  it("keeps accepted queued attachments out of the transcript across reload and dispatch", async () => {
     vi.mocked(api.submitMainPrompt).mockResolvedValueOnce({
       disposition: "queued",
       submissionId: "receipt",
@@ -420,19 +422,30 @@ describe("optimistic prompt reconciliation", () => {
     };
     first.store.activeSession = { ...state(2), queuedPrompts: [prompt] };
     await flushPromises();
-    const message = first.pending()[0];
+    expect(first.pending()).toHaveLength(0);
     wrapper!.unmount();
     const second = mountPane();
     second.store.activeSession = { ...state(2), queuedPrompts: [prompt] };
     await flushPromises();
-    expect(second.pending()).toEqual([message]);
+    expect(second.pending()).toHaveLength(0);
+    expect(second.store.activeSession?.queuedPrompts).toEqual([prompt]);
     second.store.activeSession = {
       ...state(3),
-      queuedPrompts: [prompt],
-      messages: [{ ...message, id: "server", blocks: [{ type: "text", text: "Normalized" }] }],
+      queuedPrompts: [],
+      messages: [
+        {
+          role: "user",
+          id: "server",
+          timestamp: 3,
+          clientMessageId,
+          blocks: [{ type: "text", text: "Normalized" }],
+        },
+      ],
     };
     await flushPromises();
     expect(second.pending()).toHaveLength(0);
+    expect(second.store.activeSession?.messages).toHaveLength(1);
+    expect(second.store.activeSession?.queuedPrompts).toEqual([]);
   });
 
   it.each(["submit", "steer"])(
@@ -486,7 +499,8 @@ describe("optimistic prompt reconciliation", () => {
         revision: 2,
         streamId: "generation-a",
       });
-      expect(pending()).toHaveLength(1);
+      await flushPromises();
+      expect(pending()).toHaveLength(0);
       // No local remove action: cancellation is an authoritative SSE update.
       store.activeSession = applyServerEvent(store.activeSession, {
         type: "state",
@@ -542,15 +556,15 @@ describe("optimistic prompt reconciliation", () => {
         },
       ],
     }));
-    const { pending, submit } = mountPane();
+    const { store, pending, submit } = mountPane();
     submit("Snapshot accepted");
     await flushPromises();
-    expect(pending()).toHaveLength(1);
-    expect(pending()[0].id).toBe("queued-user-9");
+    expect(pending()).toHaveLength(0);
+    expect(store.activeSession?.queuedPrompts?.[0]?.text).toBe("Snapshot accepted");
   });
 
   it.each(["submit", "steer"])(
-    "shows an outgoing %s immediately while streaming and removes a cancelled queue item",
+    "keeps a busy %s only in the queue and removes a cancelled queue item",
     async (kind) => {
       let resolve!: (value: Awaited<ReturnType<typeof api.submitMainPrompt>>) => void;
       vi.mocked(api.submitMainPrompt).mockReturnValueOnce(
@@ -562,7 +576,7 @@ describe("optimistic prompt reconciliation", () => {
       store.activeSession!.isStreaming = true;
       submit("Next instruction", [], kind);
       await flushPromises();
-      expect(pending()).toHaveLength(1);
+      expect(pending()).toHaveLength(0);
       const clientMessageId = vi.mocked(api.submitMainPrompt).mock.calls[0]![3];
       resolve({ disposition: "queued", submissionId: "receipt", sessionId: "main" });
       await flushPromises();
@@ -574,7 +588,7 @@ describe("optimistic prompt reconciliation", () => {
       };
       store.activeSession = { ...state(2), isStreaming: true, queuedPrompts: [prompt] };
       await flushPromises();
-      expect(pending()).toHaveLength(1);
+      expect(pending()).toHaveLength(0);
       vi.mocked(api.removeMainQueuedPrompt).mockResolvedValueOnce({
         ...state(3),
         isStreaming: true,
@@ -584,6 +598,86 @@ describe("optimistic prompt reconciliation", () => {
       expect(pending()).toHaveLength(0);
     },
   );
+
+  it.each(["submit", "steer"])(
+    "shows a busy %s in the transcript only after dispatch, including reconnect",
+    async (kind) => {
+      let resolve!: (value: Awaited<ReturnType<typeof api.submitMainPrompt>>) => void;
+      vi.mocked(api.submitMainPrompt).mockReturnValueOnce(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      const { store, pending, submit } = mountPane();
+      store.activeSession!.isStreaming = true;
+      submit("Dispatch me", [], kind);
+      await flushPromises();
+      expect(pending()).toHaveLength(0);
+      const clientMessageId = vi.mocked(api.submitMainPrompt).mock.calls[0]![3];
+      const queued = {
+        ...state(2),
+        isStreaming: true,
+        queuedPrompts: [
+          { kind: "followUp" as const, index: 0, text: "Dispatch me", clientMessageId },
+        ],
+      };
+      vi.mocked(api.getMain).mockResolvedValueOnce(queued);
+      resolve({ disposition: "queued", submissionId: "receipt", sessionId: "main" });
+      await flushPromises();
+      expect(pending()).toHaveLength(0);
+      expect(store.activeSession?.queuedPrompts).toHaveLength(1);
+      const dispatched = {
+        ...state(3),
+        messages: [
+          {
+            role: "user" as const,
+            id: "server",
+            timestamp: 3,
+            clientMessageId,
+            blocks: [{ type: "text" as const, text: "Dispatch me" }],
+          },
+        ],
+      };
+      store.activeSession = applyServerEvent(store.activeSession, {
+        type: "reset",
+        state: dispatched,
+        revision: 3,
+        streamId: "reconnected",
+      });
+      await flushPromises();
+      expect(pending()).toHaveLength(0);
+      expect(store.activeSession?.messages).toHaveLength(1);
+      expect(store.activeSession?.queuedPrompts).toHaveLength(0);
+    },
+  );
+
+  it("reveals a busy submission if the server actually starts it before SSE arrives", async () => {
+    vi.mocked(api.submitMainPrompt).mockResolvedValueOnce({
+      disposition: "started",
+      submissionId: "receipt",
+      sessionId: "main",
+    });
+    const { store, pending, submit } = mountPane();
+    store.activeSession!.isStreaming = true;
+    submit("Won the idle race");
+    await flushPromises();
+    expect(pending()).toHaveLength(1);
+  });
+
+  it("hides an idle submission queued by the server even if snapshot recovery fails", async () => {
+    vi.mocked(api.submitMainPrompt).mockResolvedValueOnce({
+      disposition: "queued",
+      submissionId: "receipt",
+      sessionId: "main",
+    });
+    vi.mocked(api.getMain).mockRejectedValueOnce(new Error("Snapshot unavailable"));
+    const { pending, submit, restore } = mountPane();
+    submit("Lost the idle race");
+    await flushPromises();
+    expect(pending()).toHaveLength(0);
+    expect(restore).not.toHaveBeenCalled();
+    expect(wrapper!.text()).toContain("Snapshot unavailable");
+  });
 
   it("shows send errors and restores the text and attachments for retry", async () => {
     vi.mocked(api.submitMainPrompt).mockRejectedValueOnce(new Error("Upload failed"));
