@@ -355,7 +355,7 @@ export function patchMain(kind: "model" | "thinking", body: object): Promise<Ses
     body: JSON.stringify(body),
   });
 }
-export function submitMainPrompt(
+export async function submitMainPrompt(
   kind: "prompt" | "steer",
   text: string,
   files: File[],
@@ -364,7 +364,19 @@ export function submitMainPrompt(
   const body = new FormData();
   body.set("text", text);
   body.set("clientMessageId", clientMessageId);
-  for (const file of files) body.append("files", file, file.name);
+  for (const file of files) {
+    // WebKit can lose disk-backed multipart bodies in service-worker-controlled
+    // pages (WebKit #319985). Detach the bytes before handing them to fetch.
+    const upload =
+      /AppleWebKit/.test(navigator.userAgent) &&
+      !/(Chrome|Chromium|Edg|OPR)\//.test(navigator.userAgent)
+        ? new File([await file.arrayBuffer()], file.name, {
+            type: file.type,
+            lastModified: file.lastModified,
+          })
+        : file;
+    body.append("files", upload, file.name);
+  }
   return request(`/api/main/${kind}`, { method: "POST", body });
 }
 export function stopMain(): Promise<{ ok: true }> {
