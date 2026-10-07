@@ -32,6 +32,7 @@ import { stateDirPath } from "./options";
 import { listWorkspaces } from "./workspaces";
 import { normalizeMessage, normalizeBlocks } from "./pi-state";
 import { hydrateRuntimeResultArtifacts } from "./runtime-result-artifacts-history";
+import { queuedPromptDisplay } from "./queued-prompt-display";
 import { ProviderAuthService } from "./provider-auth";
 import { ProviderUsageService } from "./provider-usage";
 import { createTools } from "./tools";
@@ -392,12 +393,7 @@ export class Runtime {
                 kind: item.mode,
                 index: item.id,
                 clientMessageId: this.clientIdsBySubmission.get(item.id),
-                text:
-                  typeof item.content === "string"
-                    ? item.content
-                    : item.content
-                        .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                        .join("\n"),
+                ...queuedPromptDisplay(item.content),
               },
             ],
       ),

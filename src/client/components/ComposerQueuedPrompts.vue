@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Compass, ListOrdered, X } from "@lucide/vue";
+import { Bell, Compass, ListOrdered, X } from "@lucide/vue";
 import type { QueuedPrompt } from "@/shared/types";
 
 const props = defineProps<{
@@ -23,13 +23,19 @@ function queuedPromptLabel(prompt: QueuedPrompt): string {
       :key="`${prompt.kind}-${prompt.index}`"
       :class="[
         'composer-queue__item',
-        prompt.kind === 'steer' ? 'composer-queue__item--steer' : 'composer-queue__item--follow-up',
+        prompt.runtimeNoticeKind
+          ? 'composer-queue__item--notice'
+          : prompt.kind === 'steer'
+            ? 'composer-queue__item--steer'
+            : 'composer-queue__item--follow-up',
       ]"
     >
-      <Compass v-if="prompt.kind === 'steer'" class="composer-queue__icon" :size="17" />
+      <Bell v-if="prompt.runtimeNoticeKind" class="composer-queue__icon" :size="17" />
+      <Compass v-else-if="prompt.kind === 'steer'" class="composer-queue__icon" :size="17" />
       <ListOrdered v-else class="composer-queue__icon" :size="17" />
       <span class="composer-queue__text">{{ prompt.text }}</span>
       <button
+        v-if="!prompt.runtimeNoticeKind"
         class="composer-queue__remove"
         type="button"
         :aria-label="`Remove ${queuedPromptLabel(prompt)} prompt`"
@@ -64,6 +70,16 @@ function queuedPromptLabel(prompt: QueuedPrompt): string {
 .composer-queue__item--steer {
   border-color: oklch(0.65 0.16 75 / 0.18);
   background: var(--color-warning-soft);
+}
+
+.composer-queue__item--notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  border-color: color-mix(in srgb, var(--color-info) 18%, transparent);
+  background: var(--color-info-soft);
+}
+
+.composer-queue__item--notice .composer-queue__icon {
+  color: var(--color-info);
 }
 
 .composer-queue__icon {

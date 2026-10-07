@@ -281,6 +281,7 @@ export interface QueuedPrompt {
   index: number;
   text: string;
   clientMessageId?: string;
+  runtimeNoticeKind?: "cron" | "subagent";
 }
 
 export type PromptDisposition =

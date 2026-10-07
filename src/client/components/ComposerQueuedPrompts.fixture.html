@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createApp, h, ref } from "vue";
+      import ComposerQueuedPrompts from "./ComposerQueuedPrompts.vue";
+      import { queuedPromptDisplay } from "../../server/queued-prompt-display";
+      import { encodeRuntimeNotice } from "../../server/runtime-notices";
+      import "../styles.css";
+      const prompts = ref([
+        ...["cron", "subagent"].map((kind, index) => ({
+          kind: index ? "steer" : "followUp",
+          index,
+          ...queuedPromptDisplay(
+            encodeRuntimeNotice({
+              kind,
+              text: "Internal routing instruction",
+              data: {
+                runtimeNotice: {
+                  text: kind + " result",
+                  markdown: "Meaningful report " + "long content ".repeat(100),
+                },
+                [kind]: { sessionId: "private-session", prompt: "Private instructions" },
+              },
+            }),
+          ),
+        })),
+        { kind: "followUp", index: 2, text: "Ordinary follow-up" },
+        { kind: "steer", index: 3, text: "Ordinary steering" },
+      ]);
+      createApp({
+        setup: () => () =>
+          h(ComposerQueuedPrompts, {
+            prompts: prompts.value,
+            onRemove: (prompt) => {
+              prompts.value = prompts.value.filter((item) => item !== prompt);
+            },
+          }),
+      }).mount("#app");
+    </script>
+  </body>
+</html>
