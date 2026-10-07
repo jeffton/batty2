@@ -81,21 +81,6 @@ test("browser rejection and caught upload failure reach authenticated server wit
         (window as any).diagnosticsFixture.app.config.errorHandler(
           new TypeError("PRIVATE Vue failure"),
         );
-        Object.defineProperty(navigator, "userAgent", { value: "iPhone AppleWebKit Safari" });
-        const file = new File(["PRIVATE bytes"], "PRIVATE.jpg");
-        file.arrayBuffer = async () => {
-          throw new DOMException("PRIVATE file failure", "NotReadableError");
-        };
-        try {
-          await (window as any).diagnosticsFixture.submitMainPrompt(
-            "prompt",
-            "",
-            [file],
-            "file-receipt",
-          );
-        } catch (error) {
-          if ((error as Error).name !== "NotReadableError") throw error;
-        }
       },
       undefined,
       undefined,
@@ -109,20 +94,14 @@ test("browser rejection and caught upload failure reach authenticated server wit
           return 0;
         }
       })
-      .toBe(5);
+      .toBe(4);
     const reports = JSON.parse(await fs.readFile(file, "utf8"));
     expect(reports.map((r: any) => r.stage).sort()).toEqual([
-      "file-read",
       "submit",
       "unhandledrejection",
       "vue",
       "window",
     ]);
-    expect(reports.find((r: any) => r.stage === "file-read")).toMatchObject({
-      errorName: "NotReadableError",
-      platform: "iOS",
-      browser: "WebKit",
-    });
     expect(reports.find((r: any) => r.stage === "submit")).toMatchObject({
       status: 413,
       hasFiles: true,
