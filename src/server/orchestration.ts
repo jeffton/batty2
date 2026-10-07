@@ -116,6 +116,7 @@ type Worker = {
   workspaceId: string;
   prompt: string;
   active?: TaskId<string>;
+  startedAtMs?: number;
   reported: EntryId[];
 };
 export type CronRun = {
@@ -946,6 +947,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             : { ownership: { kind: "task", taskId: api.taskId } },
         );
         doc.workers[id]!.active = taskId;
+        doc.workers[id]!.startedAtMs = Date.now();
         doc.calls[String(api.taskId)] = { workerId: id, taskId };
         return { workerId: id, taskId };
       }, ctx);
@@ -1471,6 +1473,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             parentId: worker.parentId,
             prompt: worker.prompt,
             taskId: worker.active,
+            startedAtMs: worker.startedAtMs ?? null,
           });
       }
       return result;

@@ -49,7 +49,7 @@ describe("cron and subagents popover", () => {
       prompt: "A lengthy worker prompt\nwith more instructions",
       model: "provider/model",
       thinkingLevel: "medium",
-      startedAtMs: 1000,
+      startedAtMs: Date.UTC(2026, 9, 7, 14, 24),
     };
     const run: CronRunLog = {
       runId: "run-second",
@@ -97,6 +97,19 @@ describe("cron and subagents popover", () => {
       expect(cronPanel.text()).toContain("Job in second");
       expect(cronPanel.text()).toContain("Second workspace");
       await wrapper.get("#cron-test-subagents-tab").trigger("click");
+      const agentPanel = wrapper.get("#cron-test-subagents-panel");
+      expect(agentPanel.text()).toContain(
+        new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+          agent.startedAtMs!,
+        ),
+      );
+      expect(agentPanel.text()).not.toContain("1970");
+      agent.startedAtMs = null;
+      vi.mocked(api.listRunningSubagents).mockResolvedValue([{ ...agent }]);
+      wrapper.getComponent({ name: "FullPopover" }).vm.$emit("toggle", { newState: "open" });
+      await flushPromises();
+      expect(agentPanel.text()).toContain("Start time unavailable");
+      expect(agentPanel.text()).not.toContain("1970");
       expect(cronPanel.attributes("style")).toContain("display: none");
       expect((wrapper.get("#cron-test-subagents-panel").element as HTMLElement).style.display).toBe(
         "",

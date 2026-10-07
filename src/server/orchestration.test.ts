@@ -878,7 +878,11 @@ test.each([undefined, false])(
       ).wait(context);
       const state = (await harness.snapshot(OrchestrationDoc, context))!;
       workerId = String(Object.values(state.workers)[0]!.id);
-      expect(await orchestration.listRunning()).toHaveLength(1);
+      const running = await orchestration.listRunning();
+      expect(running).toHaveLength(1);
+      expect(running[0]!.startedAtMs).toBeGreaterThan(Date.now() - 60000);
+      expect(running[0]!.startedAtMs).toBeLessThanOrEqual(Date.now());
+      expect(running[0]!.startedAtMs).toBe(state.workers[workerId]!.startedAtMs);
       const result = (await main.context(context)).messages.find(
         (m) => m.role === "toolResult" && m.toolName === "subagent",
       );

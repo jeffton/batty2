@@ -205,7 +205,7 @@ app.get<{ Params: { sessionId: string } }>(
       parentSessionId: String(worker.parentId),
       model: config.defaultModel,
       thinkingLevel: config.defaultThinkingLevel,
-      startedAtMs: 0,
+      startedAtMs: worker.startedAtMs,
     }));
   },
 );

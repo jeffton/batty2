@@ -208,7 +208,7 @@ export interface RunningSubagent {
   prompt: string;
   model: string;
   thinkingLevel: string;
-  startedAtMs: number;
+  startedAtMs: number | null;
 }
 
 export interface RunningCronJob {
