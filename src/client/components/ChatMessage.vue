@@ -709,6 +709,7 @@ onBeforeUnmount(() => {
 }
 
 .message__system-bubble {
+  --color-bg-inline-code: color-mix(in srgb, var(--color-info-soft) 90%, var(--color-info));
   display: inline-flex;
   align-items: flex-start;
   gap: 0.55rem;
@@ -729,7 +730,6 @@ onBeforeUnmount(() => {
 }
 
 .message__runtime-markdown {
-  --color-bg-inline-code: color-mix(in srgb, var(--color-info-soft) 90%, var(--color-info));
   --color-code-bg: var(--color-bg-inline-code);
   --color-code-border: color-mix(in srgb, var(--color-info-soft) 75%, var(--color-info));
 }
@@ -750,20 +750,6 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
 }
 
-.message__notice-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--color-info) 30%, transparent);
-  border-radius: 0.45rem;
-  background: color-mix(in srgb, var(--color-info-soft) 75%, var(--color-bg-panel));
-  color: var(--color-info);
-  font: inherit;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-
 .message__artifacts {
   display: grid;
   gap: 0.6rem;
@@ -779,16 +765,19 @@ onBeforeUnmount(() => {
   margin-top: 0.6rem;
 }
 
-.message__diff-button {
+.message__diff-button,
+.message__notice-btn {
   justify-self: start;
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.42rem 0.65rem;
-  border: 1px solid var(--color-border);
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
   border-radius: 0.5rem;
-  background: var(--color-bg-panel);
-  color: var(--color-text);
+  background: var(--color-bg-inline-code);
+  color: inherit;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -798,15 +787,22 @@ onBeforeUnmount(() => {
   min-width: 1.35rem;
   padding: 0.05rem 0.35rem;
   border-radius: 999px;
-  background: var(--color-bg-elevated-soft);
-  color: var(--color-text-muted);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: inherit;
   font-size: 0.78rem;
   text-align: center;
 }
 
+.message__diff-button:focus-visible,
+.message__notice-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 @media (hover: hover) {
-  .message__diff-button:hover {
-    background: var(--color-bg-elevated-soft);
+  .message__diff-button:hover,
+  .message__notice-btn:hover {
+    background: color-mix(in srgb, var(--color-bg-inline-code) 90%, currentColor);
   }
 }
 

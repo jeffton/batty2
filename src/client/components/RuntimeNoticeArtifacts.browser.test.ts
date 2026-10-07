@@ -22,9 +22,12 @@ afterAll(async () => {
   await browser?.close();
   await server?.close();
 });
-for (const width of [390, 1100]) {
-  test(`cron, subagent and ordinary reply artifacts render directly at ${width}px`, async () => {
-    const page = await browser.newPage({ viewport: { width, height: 900 } });
+for (const { width, colorScheme } of [
+  { width: 390, colorScheme: "light" as const },
+  { width: 1100, colorScheme: "dark" as const },
+]) {
+  test(`cron, subagent and ordinary reply artifacts render directly at ${width}px (${colorScheme})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, colorScheme });
     page.setDefaultTimeout(5000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -37,6 +40,33 @@ for (const width of [390, 1100]) {
         expect(await message.getByText("Cabin.jpg", { exact: true }).count()).toBe(1);
         expect(await message.locator(".shared-sites__meta strong").count()).toBe(1);
         const diff = message.getByRole("button", { name: "View changes" });
+        const codeBackground = await message
+          .locator(".markdown-body code")
+          .evaluate((element) => getComputedStyle(element).backgroundColor);
+        const actions = message.locator(".message__diff-button, .message__notice-btn");
+        for (const action of await actions.all()) {
+          const styles = await action.evaluate((element) => {
+            const style = getComputedStyle(element);
+            return { background: style.backgroundColor, color: style.color };
+          });
+          expect(styles.background).toBe(codeBackground);
+          expect(styles.color).toBe(
+            await diff.evaluate((element) => getComputedStyle(element).color),
+          );
+          const actionBox = (await action.boundingBox())!;
+          expect(actionBox.width).toBeGreaterThanOrEqual(44);
+          expect(actionBox.height).toBeGreaterThanOrEqual(44);
+          await page.keyboard.press("Tab");
+          await action.focus();
+          expect(await action.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe(
+            "solid",
+          );
+          await action.hover();
+          expect(
+            await action.evaluate((element) => getComputedStyle(element).backgroundColor),
+          ).not.toBe(codeBackground);
+          await page.mouse.move(0, 0);
+        }
         const box = (await diff.boundingBox())!;
         expect(box.width).toBeGreaterThanOrEqual(44);
         expect(box.height).toBeGreaterThanOrEqual(44);
@@ -45,12 +75,16 @@ for (const width of [390, 1100]) {
         await popover.waitFor();
         await popover.getByRole("button", { name: "Close code changes" }).click();
       }
-      expect(await page.getByText("Open cron session").count()).toBe(0);
+      expect(await page.getByRole("button", { name: "Open cron session" }).count()).toBe(1);
+      expect(await page.getByRole("button", { name: "Open subagent session" }).count()).toBe(1);
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
       ).toBe(true);
       expect(errors).toEqual([]);
-      await page.screenshot({ path: `/tmp/batty2-notice-artifacts-${width}.png`, fullPage: true });
+      await page.screenshot({
+        path: `/tmp/batty2-notice-artifacts-${width}-${colorScheme}.png`,
+        fullPage: true,
+      });
     } finally {
       await page.close();
     }

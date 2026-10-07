@@ -26,7 +26,7 @@ const messages: UiMessage[] = ["cron", "subagent"].map((kind) => ({
   customType: `batty-runtime-notice:${kind}`,
   text: "Report",
   data: {
-    runtimeNotice: { text: `${kind} result`, markdown: "Cabin attached." },
+    runtimeNotice: { text: `${kind} result`, markdown: "Cabin attached. `inline code`" },
     runtimeResultArtifacts: artifacts,
     [kind]: { sessionId: "42", runId: kind },
   },
@@ -36,7 +36,7 @@ messages.push({
   id: "ordinary",
   timestamp: 0,
   turnPhase: "final",
-  blocks: [{ type: "text", text: "Ordinary reply" }],
+  blocks: [{ type: "text", text: "Ordinary reply `inline code`" }],
   ...artifacts,
 });
 </script>
@@ -46,7 +46,7 @@ messages.push({
       v-for="message in messages"
       :key="message.id"
       :message="message"
-      :allow-session-popovers="false"
+      :allow-session-popovers="true"
     />
   </main>
 </template>
