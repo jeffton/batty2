@@ -10,6 +10,8 @@
       import { createPinia } from "pinia";
       import SessionTranscriptView from "./SessionTranscriptView.vue";
       import "../styles.css";
+      import { saveMainCache, readMainCache } from "../lib/main-cache.ts";
+      import { mergeSessionState } from "../lib/session-state.ts";
 
       const user = {
         id: "u",
@@ -53,7 +55,54 @@
         isStreaming: true,
       });
       const always = ref(false);
-      document.addEventListener("fixture-state", ({ detail }) => {
+      document.addEventListener("fixture-state", async ({ detail }) => {
+        if (detail === "partial") {
+          session.value = {
+            ...session.value,
+            id: "1",
+            sessionId: "1",
+            availableThinkingLevels: ["off"],
+            streamId: "before-restart",
+            revision: 1,
+            totalMessageCount: 2,
+            messages: [
+              { ...user, id: "100", timestamp: Date.now() },
+              {
+                ...reply,
+                timestamp: Date.now(),
+                id: "101",
+                runTaskId: "42",
+                stopReason: "pending",
+                blocks: [{ type: "text", text: "**Jeg synes, tur" }],
+              },
+            ],
+            isStreaming: true,
+          };
+        }
+        if (detail === "interrupted-cache") {
+          session.value = {
+            ...session.value,
+            revision: 2,
+            isStreaming: false,
+            messages: session.value.messages.map((message) =>
+              message.id === "101" ? { ...message, stopReason: "aborted" } : message,
+            ),
+          };
+          await saveMainCache(
+            {
+              authenticated: true,
+              cacheScope: "reconnect-fixture",
+              cacheExpiresAt: Date.now() + 60000,
+            },
+            session.value,
+          );
+          session.value = (await readMainCache()).session;
+          window.__cacheRestored = true;
+        }
+        if (detail === "reconnect") {
+          const delta = await fetch("/fixture-resumed.json").then((response) => response.json());
+          session.value = mergeSessionState({ ...session.value, ...delta }, session.value);
+        }
         if (detail === "reply")
           session.value = {
             ...session.value,

@@ -66,6 +66,7 @@ export interface UiAssistantMessage {
   role: "assistant";
   timestamp: number;
   turnPhase: UiAssistantTurnPhase;
+  runTaskId?: string;
   blocks: UiContentBlock[];
   model?: string;
   provider?: string;

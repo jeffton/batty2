@@ -8,6 +8,7 @@ import { afterAll, beforeAll, expect, test } from "vite-plus/test";
 declare global {
   interface Window {
     __layoutReads: number;
+    __cacheRestored: boolean;
   }
 }
 
@@ -17,7 +18,45 @@ let url: string;
 beforeAll(async () => {
   server = await createServer({
     configFile: false,
-    plugins: [vue()],
+    plugins: [
+      vue(),
+      {
+        name: "reconnect-fixture",
+        configureServer(server) {
+          server.middlewares.use("/fixture-resumed.json", (_request, response) => {
+            response.setHeader("content-type", "application/json");
+            response.end(
+              JSON.stringify({
+                streamId: "after-restart",
+                revision: 1,
+                totalMessageCount: 3,
+                isStreaming: false,
+                messages: [
+                  {
+                    id: "101",
+                    role: "assistant",
+                    timestamp: Date.now(),
+                    runTaskId: "42",
+                    stopReason: "aborted",
+                    turnPhase: "final",
+                    blocks: [{ type: "text", text: "**Jeg synes, tur" }],
+                  },
+                  {
+                    id: "102",
+                    role: "assistant",
+                    timestamp: Date.now(),
+                    runTaskId: "42",
+                    stopReason: "stop",
+                    turnPhase: "final",
+                    blocks: [{ type: "text", text: "**Full reply after reconnect**" }],
+                  },
+                ],
+              }),
+            );
+          });
+        },
+      },
+    ],
     resolve: { alias: { "@": path.resolve("src") } },
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -37,6 +76,37 @@ async function state(page: Page, value: string) {
 }
 
 for (const width of [390, 1100]) {
+  test(`interrupted stream survives offline cache and reconnect delta at ${width}px`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 800 } });
+    const page = await context.newPage();
+    page.setDefaultTimeout(3000);
+    page.on("pageerror", (error) => console.error(error.message));
+    try {
+      await page.goto(url);
+      await state(page, "partial");
+      await page.getByText("**Jeg synes, tur", { exact: true }).waitFor();
+      await context.setOffline(true);
+      await state(page, "interrupted-cache");
+      await page.getByText("Interrupted response", { exact: true }).waitFor();
+      await expect
+        .poll(() => page.evaluate(() => window.__cacheRestored, undefined, undefined, false))
+        .toBe(true);
+      await context.setOffline(false);
+      await state(page, "reconnect");
+      await page.getByText("Full reply after reconnect", { exact: true }).waitFor();
+      await page.getByText("Interrupted response", { exact: true }).waitFor({ state: "hidden" });
+      expect(await page.locator(".message--assistant").count()).toBe(1);
+      await page.getByText("Fix spacing", { exact: true }).waitFor();
+      await page.screenshot({ path: `/tmp/batty2-reconnect-${width}-collapsed.png` });
+      await page.getByRole("button", { name: "Show details", exact: true }).click();
+      await page.getByText("Interrupted response", { exact: true }).waitFor();
+      await page.getByText("**Jeg synes, tur", { exact: true }).waitFor();
+      expect(await page.locator(".message--assistant").count()).toBe(2);
+      await page.screenshot({ path: `/tmp/batty2-reconnect-${width}-details.png` });
+    } finally {
+      await context.close();
+    }
+  });
   test(`image-heavy transcript stays bounded and idle streaming does not poll layout at ${width}px`, async () => {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
     try {

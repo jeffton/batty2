@@ -13,7 +13,7 @@ const user: UiMessage = {
 function reply(
   id: string,
   extra: Partial<Extract<UiMessage, { role: "assistant" }>> = {},
-): UiMessage {
+): Extract<UiMessage, { role: "assistant" }> {
   return {
     id,
     role: "assistant",
@@ -87,6 +87,41 @@ test("cron/runtime sections run automatically and reply-less notices or aborts r
     blocks: [{ type: "thinking", thinking: "Interrupted work" }],
   });
   expect(JSON.stringify(display([user, aborted]))).toContain("Interrupted work");
+});
+
+test("a resumed durable run keeps its interrupted generation in details without hiding unrelated replies", () => {
+  const aborted = reply("partial", {
+    runTaskId: "run",
+    stopReason: "aborted",
+    blocks: [{ type: "text", text: "**Jeg synes, tur" }],
+  });
+  const final = reply("complete", {
+    runTaskId: "run",
+    stopReason: "stop",
+    blocks: [{ type: "text", text: "**Full reply**" }],
+  });
+  const collapsed = display([user, aborted, final]);
+  expect(collapsed).toHaveLength(2);
+  expect(collapsed.at(-1)).toMatchObject({ detailsToggle: { expanded: false } });
+  expect(
+    JSON.stringify(display([user, aborted, final], { openDetailsSectionKey: "turn:u" })),
+  ).toContain("**Jeg synes, tur");
+  expect(display([user, aborted, final], { alwaysShowDetails: true })).toHaveLength(3);
+  expect(display([user, aborted])).toHaveLength(2);
+  // A history page may start mid-run, and repeated restarts can leave several attempts.
+  expect(display([aborted, final])).toHaveLength(1);
+  expect(display([user, aborted, { ...aborted, id: "partial-again" }, final])).toHaveLength(2);
+  expect(
+    JSON.stringify(
+      display([user, aborted, { ...aborted, id: "partial-again" }, final], {
+        openDetailsSectionKey: "turn:u",
+      }),
+    ),
+  ).toContain("partial-again");
+  expect(display([user, aborted, { ...final, runTaskId: "other" }])).toHaveLength(3);
+  expect(display([user, { ...aborted, runTaskId: undefined }, final])).toHaveLength(3);
+  expect(display([user, { ...aborted, errorMessage: "Useful failure" }, final])).toHaveLength(3);
+  expect(display([user, aborted, { ...user, id: "new" }, final])).toHaveLength(4);
 });
 
 test("silent cron turns retain details, and a sentinel after a real reply keeps its control", () => {

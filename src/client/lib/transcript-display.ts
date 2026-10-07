@@ -166,8 +166,36 @@ export function buildTranscriptDisplayEntries(
   for (const section of sections) {
     const isRunning = section.key === latestSectionKey;
     const sectionEntries = entries.slice(section.startIndex, section.endIndex);
+    // A durable run can persist an aborted generation before resuming after a
+    // server restart. Keep that original in details, not as a second answer.
+    // Task identity is required: unrelated replies must never supersede it.
+    const resumedAbortIds = new Set(
+      sectionEntries.flatMap((entry, index) => {
+        const message = entry.message;
+        if (
+          message.role !== "assistant" ||
+          message.stopReason !== "aborted" ||
+          message.errorMessage ||
+          !message.runTaskId
+        )
+          return [];
+        const resumed = sectionEntries
+          .slice(index + 1)
+          .some(
+            ({ message: next }) =>
+              next.role === "assistant" &&
+              next.runTaskId === message.runTaskId &&
+              next.stopReason === "stop" &&
+              next.turnPhase === "final" &&
+              !next.errorMessage,
+          );
+        return resumed ? [message.id] : [];
+      }),
+    );
     const collapsedEntries = sectionEntries.map((entry) =>
-      collapsedMessage(entry, toolStatesByCallId),
+      resumedAbortIds.has(entry.message.id)
+        ? undefined
+        : collapsedMessage(entry, toolStatesByCallId),
     );
     const lastReplyIndex = collapsedEntries.findLastIndex(hasAssistantReply);
     // Without a reply there is nowhere to put a control. Keep notices, failed
@@ -178,7 +206,8 @@ export function buildTranscriptDisplayEntries(
       const collapsed = collapsedEntries[index];
       return {
         visibleEntry: isExpanded ? entry : collapsed,
-        hidesDetails: hidesExpandableDetails(entry, collapsed),
+        hidesDetails:
+          resumedAbortIds.has(entry.message.id) || hidesExpandableDetails(entry, collapsed),
       };
     });
     const canToggle = !isRunning && items.some((item) => item.hidesDetails);

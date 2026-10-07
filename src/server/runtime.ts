@@ -51,6 +51,8 @@ export function entryMessages(entries: readonly EntryRecord[]): UiMessage[] {
         const normalized = normalizeMessage(message as AgentMessage, index);
         if (!normalized) return [];
         normalized.id = index ? `${entry.id}:${index}` : String(entry.id);
+        if (normalized.role === "assistant" && entry.byTaskId !== undefined)
+          normalized.runTaskId = String(entry.byTaskId);
         return [normalized];
       });
     const data = entry.data as Record<string, unknown> | undefined;

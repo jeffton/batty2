@@ -440,6 +440,9 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else-if="props.message.role === 'assistant'" class="message__body">
+      <div v-if="props.message.stopReason === 'aborted'" class="message__timestamp">
+        Interrupted response
+      </div>
       <template
         v-for="(segment, segmentIndex) in assistantSegments"
         :key="`${props.message.id}-segment-${segmentIndex}`"

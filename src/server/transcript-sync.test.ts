@@ -6,8 +6,47 @@ import { expect, test } from "vite-plus/test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { Harness, createRegistry, MemoryStorage } from "@earendil-works/pi-durable";
-import { historyPage } from "./runtime";
+import { entryMessages, historyPage } from "./runtime";
 import { TranscriptImages } from "./transcript-images";
+
+test("persisted assistant attempts expose the durable task identity without changing originals", () => {
+  const entries = [
+    {
+      id: 1,
+      conversationId: 1,
+      kind: "pi.assistant",
+      byTaskId: 7,
+      model: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "**Partial" }],
+          stopReason: "aborted",
+          timestamp: 1,
+        },
+      ],
+    },
+    {
+      id: 2,
+      conversationId: 1,
+      kind: "pi.assistant",
+      byTaskId: 7,
+      model: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Complete" }],
+          stopReason: "stop",
+          timestamp: 2,
+        },
+      ],
+    },
+  ] as unknown as Parameters<typeof entryMessages>[0];
+  const original = JSON.stringify(entries);
+  expect(entryMessages(entries)).toMatchObject([
+    { id: "1", runTaskId: "7", stopReason: "aborted", blocks: [{ text: "**Partial" }] },
+    { id: "2", runTaskId: "7", stopReason: "stop" },
+  ]);
+  expect(JSON.stringify(entries)).toBe(original);
+});
 
 test("delta history includes its anchor and every reconnect gap across invisible records and page boundaries", async () => {
   const storage = new MemoryStorage();
