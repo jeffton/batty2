@@ -1,0 +1,72 @@
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createPinia, setActivePinia } from "pinia";
+import { flushPromises, mount } from "@vue/test-utils";
+import SettingsPopover from "./SettingsPopover.vue";
+import { useAppStore } from "@/client/stores/app";
+
+beforeEach(() => setActivePinia(createPinia()));
+
+function setup() {
+  const store = useAppStore();
+  store.settings.pushTitle = "Roy";
+  store.settings.memoryModel = "openai-codex/gpt-6-luna";
+  store.settings.memoryReasoning = "low";
+  store.workspaces = [
+    {
+      id: "roy",
+      label: "Roy",
+      path: "/roy",
+      kind: "workspace",
+      isPinned: false,
+      isAssistant: true,
+    },
+    {
+      id: "project",
+      label: "Project",
+      path: "/project",
+      kind: "workspace",
+      isPinned: false,
+      isAssistant: false,
+    },
+  ];
+  const save = vi.spyOn(store, "setAssistantWorkspace").mockResolvedValue();
+  const wrapper = mount(SettingsPopover, {
+    props: { popoverId: "settings-test", anchorName: "--settings-test" },
+    global: {
+      stubs: {
+        FullPopover: { template: "<div><slot /></div>" },
+        ModelConfigSelector: true,
+        RouterLink: { template: "<a><slot /></a>" },
+      },
+    },
+  });
+  return { wrapper, store, save };
+}
+
+describe("Assistant settings", () => {
+  it("groups workspace, push identity and memory without changing stored values", async () => {
+    const { wrapper, store, save } = setup();
+    const section = wrapper.get('[aria-labelledby="assistant-settings-title"]');
+    expect(section.text()).toContain("Push sender");
+    expect(section.text()).toContain("Memory model");
+    expect(section.text()).toContain("Memory tree");
+    expect(section.text()).not.toContain("Default model");
+    expect(section.get("select").element.value).toBe("roy");
+    expect(section.get("input").element.value).toBe("Roy");
+    expect(save).not.toHaveBeenCalled();
+    await section.get("select").setValue("project");
+    expect(save).toHaveBeenCalledWith("project");
+    expect(store.settings.memoryReasoning).toBe("low");
+    wrapper.unmount();
+  });
+
+  it("surfaces a failed workspace change", async () => {
+    const { wrapper, save } = setup();
+    save.mockRejectedValueOnce(new Error("Assistant is busy"));
+    await wrapper.get("select").setValue("project");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toBe("Assistant is busy");
+    expect(wrapper.get("select").attributes("disabled")).toBeUndefined();
+    wrapper.unmount();
+  });
+});

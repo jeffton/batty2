@@ -4,6 +4,7 @@ import {
   getModels,
   getProviderAuthStatus,
   setAppearance as setAppearanceRequest,
+  setAssistantWorkspace as setAssistantWorkspaceRequest,
   setPushTitle as setPushTitleRequest,
   setBattyAgentsFile as setBattyAgentsFileRequest,
   setBraveSearchApiKey as setBraveSearchApiKeyRequest,
@@ -57,6 +58,11 @@ export const providerSettingsActions = {
     thinkingLevel: string,
   ): Promise<void> {
     this.settings = await setDefaultModelRequest(modelId, thinkingLevel);
+  },
+
+  async setAssistantWorkspace(this: AppActionContext, workspaceId: string): Promise<void> {
+    this.workspaces = await setAssistantWorkspaceRequest(workspaceId);
+    await this.bootstrap();
   },
 
   async setPushTitle(this: AppActionContext, title: string): Promise<void> {

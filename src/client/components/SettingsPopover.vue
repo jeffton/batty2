@@ -43,6 +43,24 @@ const apiKeyInputs = reactive<Record<"google" | "openrouter", string>>({
   google: "",
   openrouter: "",
 });
+const assistantWorkspaceSaving = ref(false);
+const assistantWorkspaceError = ref("");
+const assistantWorkspaceId = computed(
+  () => store.workspaces.find((workspace) => workspace.isAssistant)?.id ?? "",
+);
+
+async function saveAssistantWorkspace(event: Event): Promise<void> {
+  assistantWorkspaceSaving.value = true;
+  assistantWorkspaceError.value = "";
+  try {
+    await store.setAssistantWorkspace((event.target as HTMLSelectElement).value);
+  } catch (error) {
+    assistantWorkspaceError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    assistantWorkspaceSaving.value = false;
+  }
+}
+
 const pushTitle = ref("");
 const pushTitleSaving = ref(false);
 const pushTitleError = ref("");
@@ -529,10 +547,27 @@ function handlePopoverToggle(event: Event): void {
         </div>
       </section>
 
-      <section class="settings-popover__section">
-        <div class="settings-popover__group-title">Push notifications</div>
+      <section class="settings-popover__section" aria-labelledby="assistant-settings-title">
+        <h2 id="assistant-settings-title" class="settings-popover__group-title">Assistant</h2>
         <label class="settings-popover__field">
-          <span>Title</span>
+          <span>Workspace</span>
+          <select
+            class="settings-popover__select"
+            :value="assistantWorkspaceId"
+            :disabled="assistantWorkspaceSaving"
+            @change="saveAssistantWorkspace"
+          >
+            <option disabled value="">Choose workspace</option>
+            <option v-for="workspace in store.workspaces" :key="workspace.id" :value="workspace.id">
+              {{ workspace.label }}
+            </option>
+          </select>
+        </label>
+        <div v-if="assistantWorkspaceError" class="settings-popover__error" role="alert">
+          {{ assistantWorkspaceError }}
+        </div>
+        <label class="settings-popover__field">
+          <span>Push sender</span>
           <input
             v-model="pushTitle"
             class="settings-popover__input"
@@ -547,11 +582,33 @@ function handlePopoverToggle(event: Event): void {
           :disabled="pushTitleSaving || !pushTitle.trim()"
           @click="savePushTitle"
         >
-          <Save :size="14" /> {{ pushTitleSaving ? "Saving…" : "Save push title" }}
+          <Save :size="14" /> {{ pushTitleSaving ? "Saving…" : "Save push sender" }}
         </button>
         <div v-if="pushTitleError" class="settings-popover__error" role="alert">
           {{ pushTitleError }}
         </div>
+        <div class="settings-popover__group-title">Memory model</div>
+        <div class="settings-popover__help">Used to build OptChat memory summaries.</div>
+        <ModelConfigSelector
+          :model-label="memoryModelLabel"
+          :effort-label="store.settings.memoryReasoning"
+          aria-label="Choose memory model"
+          @refresh-models="store.refreshModels"
+          popover-id="settings-memory-model-popover"
+          anchor-name="--settings-memory-model-anchor"
+          :models="store.models"
+          :current-model-id="store.settings.memoryModel"
+          :current-thinking-level="store.settings.memoryReasoning"
+          :thinking-options="[]"
+          :disabled="memoryModelSaving"
+          @set-model="saveMemoryModel"
+        />
+        <div v-if="memoryModelError" class="settings-popover__error" role="alert">
+          {{ memoryModelError }}
+        </div>
+        <RouterLink to="/memory-tree" class="memory-tree-link" @click="closePopover">
+          Memory tree
+        </RouterLink>
       </section>
 
       <section class="settings-popover__section">
@@ -576,31 +633,6 @@ function handlePopoverToggle(event: Event): void {
         />
         <div v-if="defaultModelError" class="settings-popover__error" role="alert">
           {{ defaultModelError }}
-        </div>
-      </section>
-
-      <section class="settings-popover__section">
-        <RouterLink to="/memory-tree" class="memory-tree-link" @click="closePopover">
-          Memory tree
-        </RouterLink>
-        <div class="settings-popover__group-title">Memory model</div>
-        <div class="settings-popover__help">Used to build OptChat memory summaries.</div>
-        <ModelConfigSelector
-          :model-label="memoryModelLabel"
-          :effort-label="store.settings.memoryReasoning"
-          aria-label="Choose memory model"
-          @refresh-models="store.refreshModels"
-          popover-id="settings-memory-model-popover"
-          anchor-name="--settings-memory-model-anchor"
-          :models="store.models"
-          :current-model-id="store.settings.memoryModel"
-          :current-thinking-level="store.settings.memoryReasoning"
-          :thinking-options="[]"
-          :disabled="memoryModelSaving"
-          @set-model="saveMemoryModel"
-        />
-        <div v-if="memoryModelError" class="settings-popover__error" role="alert">
-          {{ memoryModelError }}
         </div>
       </section>
 
@@ -963,6 +995,10 @@ function handlePopoverToggle(event: Event): void {
   color: inherit;
   padding: 0.55rem 0.65rem;
   font: inherit;
+}
+
+.settings-popover__select {
+  min-height: 44px;
 }
 
 .settings-popover__input {

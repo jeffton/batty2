@@ -17,6 +17,7 @@ import {
   setMemoryModel,
 } from "./options";
 import { listWorkspaces } from "./workspaces";
+import { changeAssistantWorkspace } from "./assistant-settings";
 import { PasskeyAuthService, formatSetupCode } from "./passkeys";
 import { verifyAuthToken } from "./auth";
 import { createLoginRateLimiter } from "./login-rate-limit";
@@ -154,6 +155,12 @@ app.get("/api/bootstrap", async (request) => ({
   models: request.auth ? await runtime.listModels() : [],
 }));
 app.get("/api/workspaces", async () => ({ workspaces: await listWorkspaces(config) }));
+app.post<{ Body: { workspaceId: string } }>("/api/settings/assistant-workspace", async (request) =>
+  changeAssistantWorkspace(config, request.body.workspaceId, {
+    state: () => runtime.state("main", undefined, false),
+    configure: (cwd) => runtime.main.configure({ cwd }, context),
+  }),
+);
 app.get("/api/models", async () => runtime.listModels());
 app.get<{ Params: { sessionId: string } }>(
   "/api/sessions/:sessionId/resources",

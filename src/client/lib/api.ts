@@ -237,6 +237,13 @@ export function listWorkspaces(): Promise<WorkspaceInfo[]> {
   );
 }
 
+export function setAssistantWorkspace(workspaceId: string): Promise<WorkspaceInfo[]> {
+  return request<{ workspaces: WorkspaceInfo[] }>("/api/settings/assistant-workspace", {
+    method: "POST",
+    body: JSON.stringify({ workspaceId }),
+  }).then((response) => response.workspaces);
+}
+
 export function setPushTitle(title: string): Promise<AppSettingsStatus> {
   return request("/api/settings/push-title", {
     method: "POST",
