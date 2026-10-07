@@ -427,7 +427,10 @@ test("each run starts from a persisted view and the full new input, never old ra
   const second = requests[1] as { role: string; content: unknown }[];
   expect(second.some((message) => message.role === "assistant")).toBe(false);
   expect(JSON.stringify(second)).toContain("old exact reply");
-  expect(JSON.stringify(second)).toContain("batty-optchat:");
+  expect(JSON.stringify(second)).not.toContain("batty-optchat:");
+  expect(second[0]!.role).toBe("system");
+  expect(second[0]).toEqual((requests[0] as { role: string; content: unknown }[])[0]);
+  expect(second.filter((message) => message.role === "system")).toHaveLength(1);
   expect(JSON.stringify(second)).toContain("second");
   const provider = (await state.harness.snapshot(ProviderDoc, state.main.id, context))!;
   expect(() =>
@@ -497,9 +500,14 @@ test("a run's tool loop preserves reasoning signatures and its frozen view verba
   expect(JSON.stringify(requests[1])).toContain("exact tool output");
   const packet = (request: { role: string; content: unknown }[]) =>
     request.find(
-      (message) => message.role === "user" && String(message.content).includes("batty-optchat:"),
+      (message) => message.role === "user" && String(message.content).startsWith("<chat>"),
     )!.content;
   expect(packet(requests[0]!)).toEqual(packet(requests[1]!));
+  expect(requests[0]![0]!.role).toBe("system");
+  expect(requests[0]![0]).toEqual(requests[1]![0]);
+  for (const request of requests)
+    expect(request.filter((message) => message.role === "system")).toHaveLength(1);
+  expect(JSON.stringify(requests[0]![0])).toContain('"name":"check"');
   expect(copied.filter((message) => message.role !== "system")).toEqual(
     requests[1]!.filter((message) => message.role !== "system"),
   );

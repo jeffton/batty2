@@ -263,6 +263,7 @@ app.get<{ Params: { workspaceId: string } }>(
   },
 );
 app.get("/api/memory/status", async () => runtime.memory.status());
+app.get("/api/memory/usage", async () => runtime.memory.usage());
 app.get<{ Querystring: { after?: string } }>("/api/main", async (request) =>
   transcriptImages.state(await runtime.state("main", undefined, true, request.query.after)),
 );

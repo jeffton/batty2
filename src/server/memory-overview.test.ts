@@ -10,11 +10,98 @@ import {
   fauxToolCall,
   fauxText,
 } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import {
+  createRegistry,
+  Harness,
+  MemoryStorage,
+  defineExtension,
+  defineTool,
+} from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createMemory, MemoryIndexDoc } from "./memory";
 import { createTools } from "./tools";
 import { createOrchestration, OrchestrationDoc, WorkerDoc } from "./orchestration";
+import { isMainMemoryView } from "./main-memory-policy";
+
+test("fresh Roy worker pins its overview across tools and later inputs while new workers see current memory", async () => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const memory = createMemory({ nodeBytes: 1000 }, models);
+  const registry = createRegistry();
+  registry.install(memory.extension);
+  let main: Awaited<ReturnType<Harness["root"]>>;
+  registry.install(
+    defineExtension({
+      name: "advance-main",
+      tools: [
+        defineTool({
+          name: "advance",
+          description: "Advance the independent main thread",
+          parameters: Type.Object({}),
+          replay: "safe",
+          execute: async () => {
+            await main.commit(
+              (tx) =>
+                tx.appendEntry(main.id, {
+                  kind: "pi.user",
+                  model: [{ role: "user", content: "later decision", timestamp: 2 }],
+                }),
+              context,
+            );
+            await memory.prepare();
+            return { content: [{ type: "text", text: "advanced" }] };
+          },
+        }),
+      ],
+    }),
+  );
+  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  main = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  try {
+    await memory.bind(harness, main);
+    await main.commit(
+      (tx) =>
+        tx.appendEntry(main.id, {
+          kind: "pi.user",
+          model: [{ role: "user", content: "initial decision", timestamp: 1 }],
+        }),
+      context,
+    );
+    await memory.prepare();
+    const worker = async () => {
+      const child = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+      await child.commit(async (tx) => {
+        (await tx.doc(WorkerDoc, child.id)).workspaceId = "roy";
+      }, context);
+      await child.configure({ model: { provider: "faux", modelId: "faux-1" } }, context);
+      return child;
+    };
+    const old = await worker();
+    const views: string[] = [];
+    faux.setResponses(
+      Array.from({ length: 4 }, (_, i) => (request) => {
+        views.push(request.messages.find(isMainMemoryView)!.content as string);
+        return fauxAssistantMessage(i === 0 ? [fauxToolCall("advance", {})] : [fauxText("done")], {
+          stopReason: i === 0 ? "toolUse" : "stop",
+        });
+      }),
+    );
+    await (await old.submit({ type: "input", content: "start" }, context)).wait(context);
+    await (await old.submit({ type: "input", content: "continue" }, context)).wait(context);
+    const fresh = await worker();
+    await (await fresh.submit({ type: "input", content: "new task" }, context)).wait(context);
+    expect(views).toHaveLength(4);
+    expect(views[0]).toBe(views[1]);
+    expect(views[0]).toBe(views[2]);
+    expect(views[0]).not.toContain("later decision");
+    expect(views[3]).toContain("later decision");
+  } finally {
+    await memory.close();
+    await harness.close(context);
+  }
+});
 
 async function until(check: () => Promise<boolean>) {
   for (let i = 0; i < 1000; i++) {

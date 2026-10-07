@@ -26,6 +26,14 @@ Reconnect requests use the last durable message ID and an inclusive overlap reco
 
 Images use lazy 768-pixel WebP previews with links to originals. The service worker stores up to 128 private previews per authentication scope, including across worker restarts. Historical rows are virtualized; eight tail rows remain mounted. Run `node scripts/verify-offline.mjs` after `pnpm build` to exercise production offline reload, private preview access and incremental reconnect.
 
+## Memory usage
+
+OptChat requests lead with the effective instructions and tool declarations. Each main run keeps its frozen overview; fresh Roy workers pin an overview at their first model request for the lifetime of that worker. Newly started workers receive the current prepared view. Copied-context workers retain their copied snapshot; other workspaces receive no main memory.
+
+Authenticated `GET /api/memory/usage` returns separate incremental and rebuild totals: attempts, measured/unmeasured outcomes, uncached input, cache reads/writes, output, reasoning and API-equivalent catalog cost. Reasoning is included in output, not added to it. This is not subscription spending. Coverage begins with instrumentation; historical compression costs and provider-internal retries without returned usage remain unknown.
+
+The durable `batty.memory-usage` document stores totals. `batty.memory-call` entries in `runtime.sqlite` hold per-attempt operation, generation/node range, source hash, model, timing, stop reason, response ID and returned usage. They contain no source text or provider error messages and do not enter the memory tree or conversational usage totals.
+
 ## Browser diagnostics
 
 Authenticated, online clients report window errors, unhandled rejections, Vue errors and caught file-read/submission failures to `/api/browser-errors`. Reports contain build/time, browser/platform family, stage, native error name, allowlisted diagnostic messages, asset-only stack locations, HTTP status and a random correlation ID. Prompt text, filenames, image bytes, response bodies and URL queries are excluded. Unknown messages are redacted; original UI errors remain visible.

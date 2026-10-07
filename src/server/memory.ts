@@ -29,6 +29,21 @@ import {
 import { decodeRuntimeNotice } from "./runtime-notices";
 import { WorkerDoc } from "./orchestration";
 import { MAIN_MEMORY_TOOLS, isMainMemoryView, withoutMainMemory } from "./main-memory-policy";
+import {
+  MemoryUsageDoc,
+  accountMemoryCall,
+  emptyMemoryUsage,
+  type MemoryCall,
+} from "./memory-usage";
+
+const WorkerMemory = defineDoc<{ view: string | null }>({
+  kind: "batty.worker-memory",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ view: null }),
+});
 
 export const NODE_BYTES = 512;
 export const VIEW_BYTES = 128_000;
@@ -507,8 +522,30 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }
     }
   }
-  async function compress(source: string, context: Context) {
+  async function recordMemoryCall(call: MemoryCall) {
+    try {
+      // The inference has already happened: persist accounting even when its caller aborts.
+      await main.commit(async (tx) => {
+        const totals = await tx.doc(MemoryUsageDoc, main.id);
+        totals.since ??= call.startedAt;
+        accountMemoryCall(totals[call.operation], call);
+        await tx.appendEntry(main.id, {
+          kind: "batty.memory-call",
+          data: { ...call, usage: call.usage ? { ...call.usage } : null },
+        });
+      }, BACKGROUND_CONTEXT);
+    } catch {
+      throw new MemoryFatalError("Unable to persist memory usage accounting");
+    }
+  }
+  async function compress(
+    source: string,
+    context: Context,
+    attribution: Pick<MemoryCall, "operation" | "generation" | "start" | "count">,
+  ) {
     if (!source || utf8Bytes(source) <= nodeBytes) return source;
+    let callNumber = 0;
+    const sourceHash = createHash("sha256").update(source).digest("hex");
     for (;;) {
       context.abortSignal?.throwIfAborted();
       try {
@@ -537,15 +574,36 @@ export function createMemory(config: MemoryConfig, models: Models) {
         ];
         let shortest = "";
         for (let attempt = 0; attempt < 5; attempt++) {
-          const response = await models.completeSimple(
-            model,
-            { messages },
-            {
-              reasoning: config.memoryReasoning ?? "medium",
-              signal: context.abortSignal,
-              cacheRetention: "short",
-            },
-          );
+          const call = {
+            ...attribution,
+            sourceHash,
+            attempt: ++callNumber,
+            provider: model.provider,
+            model: model.id,
+            startedAt: Date.now(),
+          };
+          let response;
+          try {
+            response = await models.completeSimple(
+              model,
+              { messages },
+              {
+                reasoning: config.memoryReasoning ?? "medium",
+                signal: context.abortSignal,
+                cacheRetention: "short",
+              },
+            );
+          } catch (error) {
+            await recordMemoryCall({ ...call, finishedAt: Date.now(), stopReason: "thrown" });
+            throw error;
+          }
+          await recordMemoryCall({
+            ...call,
+            finishedAt: Date.now(),
+            stopReason: response.stopReason,
+            responseId: response.responseId,
+            usage: response.usage,
+          });
           if (response.stopReason !== "stop") {
             const error = response.errorMessage ?? `Memory model stopped: ${response.stopReason}`;
             if (!isRetryableAssistantError(response)) throw new MemoryFatalError(error);
@@ -587,7 +645,11 @@ export function createMemory(config: MemoryConfig, models: Models) {
     const text =
       part.count === 1 && isMemoryNoise(leaves.get(part.start)!)
         ? ""
-        : await compress(source.trim(), context);
+        : await compress(source.trim(), context, {
+            ...part,
+            operation: "incremental",
+            generation: index.generation ?? 0,
+          });
     const committed = await main.commit(async (tx) => {
       (await tx.doc(Nodes, main.id, storedKey(part), { text })).text = text;
       const draft = await tx.doc(Index, main.id);
@@ -733,7 +795,11 @@ export function createMemory(config: MemoryConfig, models: Models) {
             ]
               .filter(Boolean)
               .join("\n");
-      const text = await compress(source, context);
+      const text = await compress(source, context, {
+        ...part,
+        operation: "rebuild",
+        generation: job.generation,
+      });
       await main.commit(async (tx) => {
         await tx.doc(Nodes, main.id, name, { text });
       }, context);
@@ -850,9 +916,8 @@ export function createMemory(config: MemoryConfig, models: Models) {
         await syncTo(input.entry - 1, context);
         await settleNow(context);
         const view = renderView(index.parts, nodes);
-        const digest = createHash("sha256").update(view).digest("hex");
         const candidate = {
-          view: `${view}\n<!-- batty-optchat:${runId}:${digest} -->`,
+          view,
           boundary: input.entry as number,
         };
         await main.commit(async (tx) => {
@@ -879,11 +944,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
           JSON.stringify(decodeRuntimeNotice(original.content)?.text ?? original.content),
     );
     if (start < 0) throw new Error("Main run boundary absent from request");
-    const system = getCurrentSystemMessage(messages.slice(0, start));
+    // Pi may emit its complete system baseline after the input/run-head.
+    // Replay every patch, then lead with the effective instructions and tools.
+    const system = getCurrentSystemMessage(messages);
     return [
-      ...(system ? [system] : []),
+      ...(system ? [{ ...system, timestamp: 0 }] : []),
       { role: "user", content: packet.view, timestamp: 0 },
-      ...messages.slice(start),
+      ...messages.slice(start).filter((message) => message.role !== "system"),
     ];
   }
   const extension = defineExtension({
@@ -945,22 +1012,39 @@ export function createMemory(config: MemoryConfig, models: Models) {
                 ],
               };
             }
-            if (messages.some(isMainMemoryView)) return;
-            await load(context);
-            const active = await harness.snapshot(LiveDoc, main.id, context);
-            const runId = active?.run?.inputs[0];
-            const packet = runId
-              ? await harness.snapshot(Packets, main.id, String(runId), context)
-              : undefined;
+            const copiedView = messages.find(isMainMemoryView);
+            let snapshot = await harness.snapshot(WorkerMemory, api.conversationId, context);
+            if (!snapshot?.view) {
+              await load(context);
+              const active = await harness.snapshot(LiveDoc, main.id, context);
+              const runId = active?.run?.inputs[0];
+              const packet = runId
+                ? await harness.snapshot(Packets, main.id, String(runId), context)
+                : undefined;
+              const candidate = {
+                view: copiedView
+                  ? (copiedView.content as string)
+                  : (packet?.view ?? renderView(index.parts, nodes)),
+              };
+              const conversation = (await harness.conversation(api.conversationId, context))!;
+              snapshot = await conversation.commit(async (tx) => {
+                const pinned = await tx.doc(WorkerMemory, api.conversationId);
+                pinned.view ??= candidate.view;
+                return { view: pinned.view };
+              }, context);
+            }
+            const system = getCurrentSystemMessage(messages);
             return {
               messages: [
-                ...messages.filter((message) => message.role === "system"),
+                ...(system ? [{ ...system, timestamp: 0 }] : []),
                 {
                   role: "user",
-                  content: packet?.view ?? renderView(index.parts, nodes),
+                  content: snapshot!.view!,
                   timestamp: 0,
                 },
-                ...messages.filter((message) => message.role !== "system"),
+                ...messages.filter(
+                  (message) => message.role !== "system" && !isMainMemoryView(message),
+                ),
               ],
             };
           }
@@ -1083,6 +1167,18 @@ export function createMemory(config: MemoryConfig, models: Models) {
           browserSummary({ start: id, count: count / 2 }),
           browserSummary({ start: id + count / 2, count: count / 2 }),
         ],
+      };
+    },
+    async usage() {
+      return {
+        ...((await harness.snapshot(MemoryUsageDoc, main.id, BACKGROUND_CONTEXT)) ?? {
+          incremental: emptyMemoryUsage(),
+          rebuild: emptyMemoryUsage(),
+          since: null,
+        }),
+        costBasis: "API-equivalent catalog estimate, not subscription spending",
+        coverage:
+          "Since instrumentation; provider-internal retries without returned usage are unknown",
       };
     },
     status() {
