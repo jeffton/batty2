@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createApp } from "vue";
+      import { createPinia } from "pinia";
+      import Fixture from "./RuntimeNoticeArtifacts.fixture.vue";
+      createApp(Fixture).use(createPinia()).mount("#app");
+    </script>
+  </body>
+</html>

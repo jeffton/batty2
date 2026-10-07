@@ -1,8 +1,7 @@
 import path from "node:path";
+import { createMutationTool } from "./mutation-tools";
 import {
   createBashToolDefinition,
-  createWriteToolDefinition,
-  createEditToolDefinition,
   createFindToolDefinition,
   createGrepToolDefinition,
   type ToolDefinition,
@@ -128,8 +127,8 @@ export async function createTools(
   };
   const native = [
     bridge("read", (cwd) => createBattyReadTool(cwd), "safe"),
-    bridge("write", (cwd) => createWriteToolDefinition(cwd)),
-    bridge("edit", (cwd) => createEditToolDefinition(cwd)),
+    bridge("write", (cwd) => createMutationTool(cwd, "write")),
+    bridge("edit", (cwd) => createMutationTool(cwd, "edit")),
     bridge(
       "bash",
       (cwd, api) =>

@@ -204,7 +204,20 @@ const messageTimestampLabel = computed(() => {
   return date.toLocaleString(locales, { dateStyle: "medium", timeStyle: "short" });
 });
 
+const noticeArtifacts = computed(() =>
+  isRuntimeNotice.value && props.message.role === "custom"
+    ? (props.message.data?.runtimeResultArtifacts as
+        | {
+            sentFiles?: SentFileDescriptor[];
+            sites?: SiteDescriptor[];
+            fileChanges?: import("@/shared/types").AgentTurnFileChange[];
+          }
+        | undefined)
+    : undefined,
+);
+
 const attachedFiles = computed<SentFileDescriptor[]>(() => {
+  if (noticeArtifacts.value) return noticeArtifacts.value.sentFiles ?? [];
   if (props.message.role !== "assistant") {
     return [];
   }
@@ -251,6 +264,7 @@ function isSiteDescriptor(candidate: unknown): candidate is SiteDescriptor {
 }
 
 const sharedSites = computed<SiteDescriptor[]>(() => {
+  if (noticeArtifacts.value) return noticeArtifacts.value.sites ?? [];
   if (props.message.role !== "assistant") return [];
   const sites: SiteDescriptor[] = [...(props.message.sites ?? [])];
   const seen = new Set(sites.map((site) => site.id));
@@ -270,7 +284,9 @@ const sharedSites = computed<SiteDescriptor[]>(() => {
 });
 
 const fileChanges = computed(() =>
-  props.message.role === "assistant" ? (props.message.fileChanges ?? []) : [],
+  props.message.role === "assistant"
+    ? (props.message.fileChanges ?? [])
+    : (noticeArtifacts.value?.fileChanges ?? []),
 );
 const hasReplyArtifacts = computed(
   () =>
@@ -351,6 +367,29 @@ onBeforeUnmount(() => {
             />
           </template>
           <template v-else>{{ props.message.text }}</template>
+          <div v-if="hasReplyArtifacts" class="message__artifacts">
+            <AttachedFilesList v-if="attachedFiles.length" :files="attachedFiles" />
+            <SharedSitesList
+              v-if="sharedSites.length"
+              :sites="sharedSites"
+              :id-prefix="props.message.id"
+            />
+            <button
+              v-if="fileChanges.length"
+              type="button"
+              class="message__diff-button"
+              :popovertarget="diffPopoverId"
+            >
+              <FileDiff :size="16" />
+              View changes
+              <span class="message__diff-count">{{ fileChanges.length }}</span>
+            </button>
+            <AgentTurnDiffPopover
+              v-if="fileChanges.length"
+              :popover-id="diffPopoverId"
+              :files="fileChanges"
+            />
+          </div>
           <div
             v-if="props.allowSessionPopovers && cronNoticeDetails && cronNoticePopoverId"
             class="message__notice-actions"
@@ -462,7 +501,11 @@ onBeforeUnmount(() => {
             class="message__artifacts"
           >
             <AttachedFilesList v-if="attachedFiles.length > 0" :files="attachedFiles" />
-            <SharedSitesList v-if="sharedSites.length > 0" :sites="sharedSites" />
+            <SharedSitesList
+              v-if="sharedSites.length > 0"
+              :sites="sharedSites"
+              :id-prefix="props.message.id"
+            />
             <button
               v-if="fileChanges.length > 0"
               type="button"
@@ -490,7 +533,11 @@ onBeforeUnmount(() => {
           <slot name="assistant-actions" />
         </ReplyActions>
         <AttachedFilesList v-if="attachedFiles.length > 0" :files="attachedFiles" />
-        <SharedSitesList v-if="sharedSites.length > 0" :sites="sharedSites" />
+        <SharedSitesList
+          v-if="sharedSites.length > 0"
+          :sites="sharedSites"
+          :id-prefix="props.message.id"
+        />
         <button
           v-if="fileChanges.length > 0"
           type="button"

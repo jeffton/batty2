@@ -5,7 +5,7 @@ import FullPopover from "@/client/components/FullPopover.vue";
 import { setSitePublic } from "@/client/lib/api";
 import type { SiteDescriptor } from "@/shared/types";
 
-const props = defineProps<{ sites: SiteDescriptor[] }>();
+const props = defineProps<{ sites: SiteDescriptor[]; idPrefix?: string }>();
 const publicById = ref<Record<string, boolean>>({});
 const savingId = ref<string>();
 const copiedId = ref<string>();
@@ -20,7 +20,7 @@ const displayedSites = computed(() =>
 );
 
 function popoverId(siteId: string): string {
-  return `site-preview-${siteId.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+  return `site-preview-${props.idPrefix ?? ""}-${siteId.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
 }
 
 function absoluteUrl(url: string): string {

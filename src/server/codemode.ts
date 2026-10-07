@@ -278,6 +278,8 @@ export function createCodemodeTool(
           calls.flatMap((call) => (Array.isArray(call[key]) ? (call[key] as JsonValue[]) : []));
         const sentFiles = effects("sentFiles");
         const sites = effects("sites");
+        const battyFileChanges = effects("battyFileChanges");
+        const fileChanges = effects("fileChanges");
         return {
           content: limited,
           isError: !result.ok,
@@ -294,6 +296,8 @@ export function createCodemodeTool(
               : {}),
             ...(sentFiles.length ? { sentFiles } : {}),
             ...(sites.length ? { sites } : {}),
+            ...(battyFileChanges.length ? { battyFileChanges } : {}),
+            ...(fileChanges.length ? { fileChanges } : {}),
           } as unknown as JsonValue,
           ...(control ? { control } : {}),
         };

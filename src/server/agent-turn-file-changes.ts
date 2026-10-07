@@ -6,6 +6,7 @@ export const AGENT_TURN_FILE_CHANGES_CUSTOM_TYPE = "batty-agent-turn-file-change
 
 /** Mutation snapshots live inside Pi's immutable tool results, not a second journal. */
 export interface DurableFileChange extends AgentTurnFileChange {
+  order?: number;
   before: string | null;
   after: string;
 }

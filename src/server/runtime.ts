@@ -31,6 +31,7 @@ import type { AppConfig } from "./config";
 import { stateDirPath } from "./options";
 import { listWorkspaces } from "./workspaces";
 import { normalizeMessage, normalizeBlocks } from "./pi-state";
+import { hydrateRuntimeResultArtifacts } from "./runtime-result-artifacts-history";
 import { ProviderAuthService } from "./provider-auth";
 import { ProviderUsageService } from "./provider-usage";
 import { createTools } from "./tools";
@@ -110,6 +111,9 @@ export async function historyPage(
     messages.unshift(...entryMessages([...page.items].reverse()));
     cursor = page.next;
   } while (messages.length < target && cursor);
+  await Promise.all(
+    messages.map((message) => hydrateRuntimeResultArtifacts(storage, conversationId, message)),
+  );
   return {
     messages,
     hasMoreMessages: cursor !== undefined,

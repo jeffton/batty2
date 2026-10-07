@@ -1041,6 +1041,96 @@ test("worker-started synchronous delegation still returns the result in its tool
   });
 }, 15000);
 
+test.each([false, true])(
+  "cron preserves helper artifacts through synchronous=%s joins",
+  async (sync) => {
+    const { faux, orchestration, open, registry } = await fixture();
+    const file = {
+      id: "f",
+      name: "Cabin.jpg",
+      size: 1,
+      mimeType: "image/jpeg",
+      kind: "image",
+      downloadUrl: "/api/sent-files/f",
+    };
+    const site = { id: "s", name: "Site", url: "/api/sites/s", public: false };
+    registry.install(
+      defineExtension({
+        name: "artifact-fixture",
+        tools: [
+          defineTool({
+            name: "emit-artifacts",
+            description: "Emit artifacts",
+            parameters: Type.Object({}),
+            execute: async () => ({
+              content: [{ type: "text", text: "Emitted" }],
+              details: {
+                sentFiles: [file],
+                sites: [site],
+                battyFileChanges: [
+                  { path: "a.ts", before: "before\n", after: "after\n", patch: "unused" },
+                ],
+              },
+            }),
+          }),
+        ],
+      }),
+    );
+    const { harness, main } = await open();
+    faux.setResponses(
+      Array.from({ length: 30 }, () => (request) => {
+        const last = request.messages.findLast((m) => m.role !== "system")!;
+        const text = JSON.stringify(last.content);
+        if (last.role === "user" && text.includes("artifact outer"))
+          return fauxAssistantMessage(
+            [fauxToolCall("subagent", { action: "run", prompt: "artifact inner", async: !sync })],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "user" && text.includes("artifact inner"))
+          return fauxAssistantMessage([fauxToolCall("emit-artifacts", {})], {
+            stopReason: "toolUse",
+          });
+        if (last.role === "toolResult" && last.toolName === "emit-artifacts")
+          return fauxAssistantMessage([fauxText("helper done")]);
+        if (
+          last.role === "toolResult" &&
+          last.toolName === "subagent" &&
+          text.includes("Started")
+        ) {
+          const sessionId = text.match(/Session ID: (\d+)/)![1]!;
+          return fauxAssistantMessage([fauxToolCall("subagent", { action: "await", sessionId })], {
+            stopReason: "toolUse",
+          });
+        }
+        return fauxAssistantMessage([fauxText("cron finished")]);
+      }),
+    );
+    const job = await orchestration.addJob({
+      workspaceId: "test",
+      prompt: "artifact outer",
+      schedule: { kind: "at", in: "1h" },
+    });
+    await main.commit(async (tx) => {
+      (await tx.doc(OrchestrationDoc)).jobs[job.id]!.nextAt = Date.now() - 1;
+    }, context);
+    await orchestration.tick();
+    await until(async () => (await orchestration.listRunLogs())[0]?.status === "completed");
+    await main.waitForIdle(context);
+    const reports = (await main.context(context)).messages
+      .filter((m) => m.role === "user")
+      .map((m) => decodeRuntimeNotice(m.content))
+      .filter((notice) => notice?.data?.runtimeNotice);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.data!.runtimeResultArtifacts).toMatchObject({
+      sentFiles: [file],
+      sites: [site],
+      fileChanges: [{ path: "a.ts" }],
+    });
+    expect(JSON.stringify(reports[0])).toContain("-before");
+  },
+  15000,
+);
+
 test("queue admits the current report before delivering the queued prompt", async () => {
   const { faux, orchestration, open } = await fixture(1000);
   const { harness, main } = await open();
