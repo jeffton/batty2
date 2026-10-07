@@ -321,6 +321,10 @@ export interface SessionState {
   contextPercent: number | null;
   totalMessageCount: number;
   hasMoreMessages: boolean;
+  /** Entry cursor for bounded incremental archive catch-up, including invisible entries. */
+  historyAfter?: string;
+  historyCursor?: string;
+  hasMoreRecentMessages?: boolean;
   messagesDetailLevel?: "summary" | "full";
   messages: UiMessage[];
   activeAssistant?: Extract<UiMessage, { role: "assistant" }>;

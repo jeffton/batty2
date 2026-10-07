@@ -28,6 +28,7 @@ import {
 
 import { decodeRuntimeNotice } from "./runtime-notices";
 import { WorkerDoc } from "./orchestration";
+import { conversationPolicy } from "./conversation-policy";
 import { MAIN_MEMORY_TOOLS, isMainMemoryView, withoutMainMemory } from "./main-memory-policy";
 import {
   MemoryUsageDoc,
@@ -966,7 +967,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
         outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
         execute: async ({ id, n }, api, context) => {
           const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
-          if (api.conversationId !== main.id && worker?.workspaceId !== "roy")
+          if (
+            !conversationPolicy(
+              api.conversationId === main.id ? "assistant" : "worker",
+              worker?.workspaceId,
+            ).mainMemory
+          )
             throw new Error("Main memory is available only to Roy workers");
           return { content: [{ type: "text", text: await zoom(id, n, context) }] };
         },
@@ -979,7 +985,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
         replay: "safe",
         execute: async ({ id }, api, context) => {
           const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
-          if (api.conversationId !== main.id && worker?.workspaceId !== "roy")
+          if (
+            !conversationPolicy(
+              api.conversationId === main.id ? "assistant" : "worker",
+              worker?.workspaceId,
+            ).mainMemory
+          )
             throw new Error("Main memory is available only to Roy workers");
           return { content: [{ type: "text", text: await date(id, context) }] };
         },
@@ -987,13 +998,17 @@ export function createMemory(config: MemoryConfig, models: Models) {
     ],
     hooks: [
       hook(CompactionTask, {
-        beforeCompact: (_, api) => (api.conversationId === main.id ? { decline: true } : undefined),
+        beforeCompact: (_, api) =>
+          conversationPolicy(api.conversationId === main.id ? "assistant" : "worker")
+            .nativeCompaction
+            ? undefined
+            : { decline: true },
       }),
       hook(GenerationTask, {
         beforeRequest: async ({ messages }, api, context) => {
           if (api.conversationId !== main.id) {
             const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
-            if (worker?.workspaceId !== "roy") {
+            if (!conversationPolicy("worker", worker?.workspaceId).mainMemory) {
               const isolated = withoutMainMemory(messages);
               const system = getCurrentSystemMessage(messages);
               return {

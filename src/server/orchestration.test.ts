@@ -22,6 +22,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type, getCurrentTools } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createOrchestration, OrchestrationDoc } from "./orchestration.js";
+import { orchestrationHistory } from "./orchestration-test-history";
 import { decodeRuntimeNotice } from "./runtime-notices.js";
 import { registerPushCompletions } from "./push-completions.js";
 import type { Runtime } from "./runtime.js";
@@ -142,7 +143,7 @@ test.each([true, "chat-only"] as const)(
     );
     await (await main.submit({ type: "input", content: "launch" }, context)).wait(context);
     await until(async () => (await orchestration.listRunning()).length === 0);
-    const worker = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+    const worker = Object.values((await orchestrationHistory(harness))!.workers)[0]!;
     const child = (await harness.conversation(worker.id, context))!;
     const view = await child.viewState(context);
     expect(view.value.conversation.parent).toBeUndefined();
@@ -213,7 +214,7 @@ test("worker agent preparation applies workspace-scoped tools before generation 
   ).wait(context);
   await until(async () => (await orchestration.listRunning()).length === 0);
   expect(prepared).toEqual([{ cwd: "/tmp", actualCwd: "/tmp" }]);
-  const worker = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  const worker = Object.values((await orchestrationHistory(harness))!.workers)[0]!;
   const messages = (await (await harness.conversation(worker.id, context))!.context(context))
     .messages;
   const result = messages.find(
@@ -627,13 +628,10 @@ test("workers spawned by a worker deliver async replies only to their parent", a
     }),
   );
   await (await main.submit({ type: "input", content: "start outer" }, context)).wait(context);
-  await until(
-    async () =>
-      Object.keys((await harness.snapshot(OrchestrationDoc, context))!.workers).length === 2,
-  );
+  await until(async () => Object.keys((await orchestrationHistory(harness))!.workers).length === 2);
   await until(async () => (await orchestration.listRunning()).length === 0);
   await main.waitForIdle(context);
-  const state = (await harness.snapshot(OrchestrationDoc, context))!;
+  const state = (await orchestrationHistory(harness))!;
   expect(Object.values(state.workers).some((w) => w.parentId !== main.id)).toBe(true);
   const mainHistory = JSON.stringify((await main.context(context)).messages);
   expect(mainHistory).not.toContain("leaf answer");
@@ -750,7 +748,7 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
         await submission.wait(context);
       }
       await until(async () => {
-        const state = (await harness.snapshot(OrchestrationDoc, context))!;
+        const state = (await orchestrationHistory(harness))!;
         const outer = Object.values(state.workers).find((w) => w.parentId === main.id);
         if (!outer) return false;
         const live = await harness.snapshot(LiveDoc, outer.id, context);
@@ -786,7 +784,7 @@ test.each(["complete", "restart", "cron-run", "cron-resume", "cron-restart"])(
     }
     await until(async () => (await orchestration.listRunning()).length === 0);
     await main.waitForIdle(context);
-    const state = (await harness.snapshot(OrchestrationDoc, context))!;
+    const state = (await orchestrationHistory(harness))!;
     const outer = Object.values(state.workers).find((w) => w.parentId === main.id)!;
     const history = (await main.context(context)).messages
       .map((message) =>
@@ -876,7 +874,7 @@ test.each([undefined, false])(
       await (
         await main.submit({ type: "input", content: "launch async test" }, context)
       ).wait(context);
-      const state = (await harness.snapshot(OrchestrationDoc, context))!;
+      const state = (await orchestrationHistory(harness))!;
       workerId = String(Object.values(state.workers)[0]!.id);
       const running = await orchestration.listRunning();
       expect(running).toHaveLength(1);
@@ -1003,9 +1001,7 @@ test("async reports steer a busy main before its final reply", async () => {
   expect(history.findLast((m) => m.role === "assistant")).toMatchObject({
     content: [{ type: "text", text: "main reacted before final" }],
   });
-  expect(Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)).toHaveLength(
-    1,
-  );
+  expect(Object.values((await orchestrationHistory(harness))!.workers)).toHaveLength(1);
 }, 15000);
 
 test("worker-started synchronous delegation still returns the result in its tool call", async () => {
@@ -1034,7 +1030,7 @@ test("worker-started synchronous delegation still returns the result in its tool
     await main.submit({ type: "input", content: "launch sync preservation" }, context)
   ).wait(context);
   await until(async () => (await orchestration.listRunning()).length === 0);
-  const outer = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers).find(
+  const outer = Object.values((await orchestrationHistory(harness))!.workers).find(
     (w) => w.parentId === main.id,
   )!;
   const messages = (await (await harness.conversation(outer.id, context))!.context(context))
@@ -1168,12 +1164,11 @@ test("queue admits the current report before delivering the queued prompt", asyn
     }),
   );
   await (await main.submit({ type: "input", content: "start queue test" }, context)).wait(context);
-  const initial = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  const initial = Object.values((await orchestrationHistory(harness))!.workers)[0]!;
   workerId = String(initial.id);
   const firstTask = initial.active!;
   await (await main.submit({ type: "input", content: "queue next" }, context)).wait(context);
-  const secondTask = (await harness.snapshot(OrchestrationDoc, context))!.workers[workerId]!
-    .active!;
+  const secondTask = (await orchestrationHistory(harness))!.workers[workerId]!.active!;
   expect(secondTask).not.toBe(firstTask);
   await until(async () => (await orchestration.listRunning()).length === 0);
   const admissions = await main.commit(
@@ -1251,13 +1246,13 @@ test("concurrent queues chain transactionally and defer worker configuration", a
     }),
   );
   await (await main.submit({ type: "input", content: "launch probe" }, context)).wait(context);
-  const original = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  const original = Object.values((await orchestrationHistory(harness))!.workers)[0]!;
   workerId = String(original.id);
   const firstTask = original.active!;
   try {
     await until(async () => seen.length === 1);
     await (await main.submit({ type: "input", content: "queue pair" }, context)).wait(context);
-    const state = (await harness.snapshot(OrchestrationDoc, context))!;
+    const state = (await orchestrationHistory(harness))!;
     const queued = Object.values(state.calls)
       .filter((call) => call.taskId !== firstTask)
       .map((call) => call.taskId)
@@ -1321,9 +1316,9 @@ test("concurrent resumes admit only one new worker turn", async () => {
   await (await main.submit({ type: "input", content: "initial launch" }, context)).wait(context);
   await until(async () => (await orchestration.listRunning()).length === 0);
   await main.waitForIdle(context);
-  workerId = Object.keys((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  workerId = Object.keys((await orchestrationHistory(harness))!.workers)[0]!;
   await (await main.submit({ type: "input", content: "resume pair" }, context)).wait(context);
-  expect(Object.keys((await harness.snapshot(OrchestrationDoc, context))!.calls)).toHaveLength(2);
+  expect(Object.keys((await orchestrationHistory(harness))!.calls)).toHaveLength(2);
   const failures = (await main.context(context)).messages.filter(
     (message) => message.role === "toolResult" && message.isError,
   );
@@ -1366,7 +1361,7 @@ test("subagent stop cancels the active delivery and its queued tail", async () =
     }),
   );
   await (await main.submit({ type: "input", content: "launch stoppable" }, context)).wait(context);
-  workerId = Object.keys((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  workerId = Object.keys((await orchestrationHistory(harness))!.workers)[0]!;
   await (await main.submit({ type: "input", content: "queue stoppable" }, context)).wait(context);
   await (await main.submit({ type: "input", content: "stop worker" }, context)).wait(context);
   await until(async () => (await orchestration.listRunning()).length === 0);
@@ -1374,7 +1369,7 @@ test("subagent stop cancels the active delivery and its queued tail", async () =
   expect(JSON.stringify((await worker.context(context)).messages)).not.toContain(
     "queued worker must never start",
   );
-  for (const call of Object.values((await harness.snapshot(OrchestrationDoc, context))!.calls)) {
+  for (const call of Object.values((await orchestrationHistory(harness))!.calls)) {
     const task = await harness.waitForTask(call.taskId, context);
     expect(task.state.outcome.status).toBe("aborted");
   }
@@ -1604,7 +1599,7 @@ test("inline model/thinking overrides survive restart and restore the main agent
     model: { modelId: "faux-1" },
     thinkingLevel: "low",
   });
-  expect((await harness.snapshot(OrchestrationDoc, context))!.inlineContext).toBeUndefined();
+  expect((await orchestrationHistory(harness))!.inlineContext).toBeUndefined();
 }, 15000);
 
 test("an admitted legacy inline cron retains its workspace after restart", async () => {
@@ -1880,7 +1875,7 @@ test.each([
     await orchestration.tick();
     try {
       await until(async () => {
-        const state = (await harness.snapshot(OrchestrationDoc, context))!;
+        const state = (await orchestrationHistory(harness))!;
         const fast = Object.values(state.workers).find((w) => w.prompt === "fast parallel child");
         return (
           !!fast?.active &&
@@ -1894,7 +1889,7 @@ test.each([
         await until(async () => continuing);
         releaseFast();
         await until(async () => {
-          const state = (await harness.snapshot(OrchestrationDoc, context))!;
+          const state = (await orchestrationHistory(harness))!;
           const fast = Object.values(state.workers).find(
             (w) => w.prompt === "fast parallel child",
           )!;
@@ -1951,11 +1946,8 @@ test("closing in-flight background work resumes the same child input and report"
     }),
   );
   await main.submit({ type: "input", content: "start slow" }, context);
-  await until(
-    async () =>
-      Object.keys((await harness.snapshot(OrchestrationDoc, context))!.workers).length === 1,
-  );
-  const worker = Object.values((await harness.snapshot(OrchestrationDoc, context))!.workers)[0]!;
+  await until(async () => Object.keys((await orchestrationHistory(harness))!.workers).length === 1);
+  const worker = Object.values((await orchestrationHistory(harness))!.workers)[0]!;
   await until(async () =>
     JSON.stringify(
       (await (await harness.conversation(worker.id, context))!.context(context)).messages,

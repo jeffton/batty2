@@ -44,6 +44,16 @@ import { runtimeResultArtifacts } from "./runtime-result-artifacts.js";
 import type { AgentTurnArtifacts } from "./agent-turn-file-changes.js";
 import { MAIN_MEMORY_TOOLS, withoutMainMemory } from "./main-memory-policy.js";
 
+import {
+  ArchivedWorker,
+  ArchivedRun,
+  DeliveryRecord,
+  indexRun,
+  readRuns,
+  type WorkerRecord,
+} from "./orchestration-history";
+import { conversationPolicy } from "./conversation-policy";
+
 const context = BACKGROUND_CONTEXT;
 export type ContextMode = boolean | "chat-only";
 export type ContextProvider = (
@@ -110,15 +120,7 @@ export type CronJob = {
   createdAt: number;
   updatedAt: number;
 };
-type Worker = {
-  id: ConversationId;
-  parentId: ConversationId;
-  workspaceId: string;
-  prompt: string;
-  active?: TaskId<string>;
-  startedAtMs?: number;
-  reported: EntryId[];
-};
+type Worker = WorkerRecord;
 export type CronRun = {
   id: string;
   jobId: string;
@@ -142,6 +144,7 @@ export const OrchestrationDoc = defineDoc<{
   joinParents?: Record<string, SubmissionId>;
   jobs: Record<string, CronJob>;
   runs: Record<string, CronRun>;
+  archived?: boolean;
 }>({
   kind: "batty.orchestration",
   version: 1,
@@ -164,6 +167,22 @@ export const WorkerDoc = defineDoc<{
   fork: "initial",
   initial: () => ({ isSubagent: false, isCron: false }),
 });
+
+async function archiveWorker(tx: Tx, workerId: string, taskId: TaskId<string>) {
+  const doc = await tx.doc(OrchestrationDoc);
+  const worker = doc.workers[workerId];
+  for (const [id, call] of Object.entries(doc.calls)) {
+    if (call.taskId === taskId) delete doc.calls[id];
+  }
+  if (worker?.active === taskId) {
+    for (const call of Object.values(doc.calls)) {
+      if (call.workerId === workerId && (await tx.task(call.taskId))?.state.status !== "terminal")
+        return;
+    }
+    Object.assign(await tx.doc(ArchivedWorker, workerId, worker), worker);
+    delete doc.workers[workerId];
+  }
+}
 
 export interface OrchestrationConfig {
   config?: unknown;
@@ -274,19 +293,19 @@ function deliveryNotice(input: DeliveryInput): RuntimeNotice {
 }
 
 function workerTools(agent: Agent, workspaceId: string): string[] {
-  const memoryTools =
-    workspaceId === "roy"
-      ? agent.extensions.flatMap((extension) =>
-          extension.name === "batty-optchat" ? (extension.tools ?? []) : [],
-        )
-      : [];
+  const memoryTools = conversationPolicy("worker", workspaceId).mainMemory
+    ? agent.extensions.flatMap((extension) =>
+        extension.name === "batty-optchat" ? (extension.tools ?? []) : [],
+      )
+    : [];
   return [
     ...new Set(
       [...agent.tools, ...memoryTools]
         .filter(
           (tool) =>
             tool.name !== "memory_overview" &&
-            (workspaceId === "roy" || !MAIN_MEMORY_TOOLS.has(tool.name)),
+            (conversationPolicy("worker", workspaceId).mainMemory ||
+              !MAIN_MEMORY_TOOLS.has(tool.name)),
         )
         .map((tool) => tool.name),
     ),
@@ -320,7 +339,9 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     if (!contextFor)
       throw new Error("Context copying requires orchestration.setContextProvider(fn)");
     const copied = await contextFor(parentId, mode);
-    const messages = workspaceId === "roy" ? copied : withoutMainMemory(copied);
+    const messages = conversationPolicy("worker", workspaceId).mainMemory
+      ? copied
+      : withoutMainMemory(copied);
     if (mode !== "chat-only") return messages;
     return messages.flatMap<Message>((message) => {
       if (message.role === "user") return [message];
@@ -343,8 +364,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     const inherited =
       parentId === undefined
         ? undefined
-        : (await harness.snapshot(OrchestrationDoc, context))?.workers[String(parentId)]
-            ?.workspaceId;
+        : (
+            (await harness.snapshot(OrchestrationDoc, context))?.workers[String(parentId)] ??
+            (await harness.snapshot(ArchivedWorker, String(parentId), context))
+          )?.workspaceId;
     const parentCwd =
       parentId === undefined
         ? undefined
@@ -574,7 +597,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         // Suppress only successful cron reports, before creating any main input or notice.
         // Keep the task result and run history intact, including for already-checkpointed reports.
         const silentCron = task.input.runId && !failed && text.trim() === NO_REPLY_SENTINEL;
-        if (send && !silentCron && !state?.joins?.[String(task.id)]) {
+        if (
+          send &&
+          !silentCron &&
+          !(await runtime.snapshot(DeliveryRecord, String(task.id), ctx))?.join
+        ) {
           const targetId = task.input.runId
             ? task.input.mainId
             : state!.workers[task.input.workerId]!.parentId;
@@ -602,7 +629,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           if (!task.input.runId) {
             await runtime.commit(async (tx) => {
               const doc = await tx.doc(OrchestrationDoc);
-              if (doc.joins?.[String(task.id)] !== undefined) {
+              if ((await tx.doc(DeliveryRecord, String(task.id), {})).join !== undefined) {
                 handled = true;
                 return;
               }
@@ -642,18 +669,15 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             // A joined parent is still held in its tool round until this task ends.
             if (
               !task.input.runId &&
-              (await runtime.snapshot(OrchestrationDoc, ctx))?.joins?.[String(task.id)] !==
-                undefined
+              (await runtime.snapshot(DeliveryRecord, String(task.id), ctx))?.join !== undefined
             )
               await submission.abort(ctx);
           }
         }
         await runtime.commit(async (tx) => {
           if (artifacts) {
-            const doc = await tx.doc(OrchestrationDoc);
-            doc.resultArtifacts ??= {};
-            doc.resultArtifacts[String(task.id)] = artifacts as AgentTurnArtifacts &
-              Record<string, JsonValue>;
+            (await tx.doc(DeliveryRecord, String(task.id), {})).artifacts =
+              artifacts as AgentTurnArtifacts & Record<string, JsonValue>;
           }
           if (task.input.runId) {
             const doc = await tx.doc(OrchestrationDoc);
@@ -665,7 +689,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             run.status = failed ? "failed" : "completed";
             run.finishedAt = runtime.now();
             run.output = text;
+            Object.assign(await tx.doc(ArchivedRun, run.id, run), run);
+            delete doc.runs[run.id];
           }
+          await archiveWorker(tx, task.input.workerId, task.id);
           return { status: "terminal", outcome: { status: "completed", result: text } };
         }, ctx);
       },
@@ -694,7 +721,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           const run = doc.runs[task.input.runId]!;
           run.status = "aborted";
           run.finishedAt = runtime.now();
+          Object.assign(await tx.doc(ArchivedRun, run.id, run), run);
+          delete doc.runs[run.id];
         }
+        await archiveWorker(tx, task.input.workerId, task.id);
         return { status: "terminal", outcome: { status: "aborted", result: "Stopped." } };
       }, ctx);
     },
@@ -789,9 +819,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     }),
     execute: async (args, api, ctx) => {
       const state = await api.snapshot(OrchestrationDoc, ctx);
-      const existingCall = state?.calls[String(api.taskId)];
+      const existingCall = (await api.snapshot(DeliveryRecord, String(api.taskId), ctx))?.call;
       const workerId = existingCall?.workerId ?? args.sessionId;
-      const worker = workerId ? state?.workers[workerId] : undefined;
+      const worker = workerId
+        ? (state?.workers[workerId] ?? (await api.snapshot(ArchivedWorker, workerId, ctx)))
+        : undefined;
       if (args.action !== "run" && !worker) throw new Error(`Unknown subagent: ${workerId}`);
       const active =
         worker?.active === undefined ? undefined : await api.getTask(worker.active, ctx);
@@ -807,9 +839,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         const target = await api.memo("batty.await", worker!.active!, ctx);
         await api.commit(async (tx) => {
           const doc = await tx.doc(OrchestrationDoc);
-          doc.joins ??= {};
-          const joins = doc.joins;
-          joins[String(target)] = api.taskId;
+          (await tx.doc(DeliveryRecord, String(target), {})).join = api.taskId;
           const live = await tx.doc(LiveDoc, api.conversationId);
           doc.joinParents ??= {};
           // Inputs survive generation handovers; taskId changes every tool round.
@@ -840,8 +870,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
               ? settled.state.outcome.result
               : `Subagent ${settled.state.outcome.status}`,
           ),
-          details:
-            (await api.snapshot(OrchestrationDoc, ctx))?.resultArtifacts?.[String(target)] ?? {},
+          details: (await api.snapshot(DeliveryRecord, String(target), ctx))?.artifacts ?? {},
         };
       }
       if (args.action === "await")
@@ -896,8 +925,14 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const change = modelChange(args.model, args.effort);
       const result = await api.commit(async (tx) => {
         const doc = await tx.doc(OrchestrationDoc);
-        const prior = doc.calls[String(api.taskId)];
+        const call = await tx.doc(DeliveryRecord, String(api.taskId), {});
+        const prior = call.call;
         if (prior) return { ...prior };
+        if (args.sessionId && !doc.workers[args.sessionId]) {
+          doc.workers[args.sessionId] = {
+            ...(await tx.doc(ArchivedWorker, args.sessionId, worker!)),
+          };
+        }
         const currentWorker = args.sessionId ? doc.workers[args.sessionId] : undefined;
         const currentTask =
           currentWorker?.active === undefined ? undefined : await tx.task(currentWorker.active);
@@ -949,6 +984,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         doc.workers[id]!.active = taskId;
         doc.workers[id]!.startedAtMs = Date.now();
         doc.calls[String(api.taskId)] = { workerId: id, taskId };
+        call.call = { workerId: id, taskId };
         return { workerId: id, taskId };
       }, ctx);
       await api.details(
@@ -984,7 +1020,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             respondIn: "tool-call",
             includePreviousContext: args.includePreviousContext ?? false,
           },
-          ...(await api.snapshot(OrchestrationDoc, ctx))?.resultArtifacts?.[String(result.taskId)],
+          ...(await api.snapshot(DeliveryRecord, String(result.taskId), ctx))?.artifacts,
         } as unknown as Record<string, JsonValue>,
       };
     },
@@ -996,17 +1032,42 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       (j) => workspaceId === undefined || j.workspaceId === workspaceId,
     );
   const listRunLogs = async (jobId?: string, limit = 100, workspaceId?: string) =>
-    Object.values((await snapshot()).runs)
-      .filter(
-        (r) => (!jobId || r.jobId === jobId) && (!workspaceId || r.workspaceId === workspaceId),
-      )
-      .sort((a, b) => b.startedAt - a.startedAt)
-      .slice(0, limit);
-  const listRunningCron = async (jobId?: string) =>
-    (await listRunLogs(jobId, Number.MAX_SAFE_INTEGER)).filter((r) => r.status === "running");
+    readRuns(harness, context, jobId, limit, workspaceId);
+  const listRunningCron = async (jobId?: string) => {
+    const running: CronRun[] = [];
+    for (const run of Object.values((await snapshot()).runs)) {
+      const task = await harness.getTask(run.taskId, context);
+      if (task?.state.status !== "terminal") {
+        if (!jobId || run.jobId === jobId) running.push(run);
+        continue;
+      }
+      const outcome = task.state.outcome;
+      await main.commit(async (tx) => {
+        const doc = await tx.doc(OrchestrationDoc);
+        const current = doc.runs[run.id];
+        if (!current || current.taskId !== run.taskId) return;
+        current.status =
+          outcome.status === "completed"
+            ? "completed"
+            : outcome.status === "aborted"
+              ? "aborted"
+              : "failed";
+        current.finishedAt = Date.now();
+        if (doc.inlineContext?.runId === current.id) {
+          await restoreInlineAgent(tx, main.id, doc.inlineContext);
+          delete doc.inlineContext;
+        }
+        Object.assign(await tx.doc(ArchivedRun, current.id, current), current);
+        delete doc.runs[current.id];
+        await archiveWorker(tx, current.sessionId, current.taskId);
+      }, context);
+    }
+    return running;
+  };
   const tick = async () => {
     if (closed) return;
     const now = Date.now();
+    await listRunningCron();
     const jobs = await listJobs();
     for (const job of jobs) {
       if (
@@ -1088,6 +1149,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             sessionId: String(child),
             status: "running",
           };
+          await indexRun(tx, doc.runs[runId]!);
           current.nextAt =
             current.schedule.kind === "every"
               ? job.nextAt! +
@@ -1247,7 +1309,8 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     await arm();
   };
   const stopRunning = async (runId: string) => {
-    const run = (await snapshot()).runs[runId];
+    const run =
+      (await snapshot()).runs[runId] ?? (await harness.snapshot(ArchivedRun, runId, context));
     if (!run) throw new Error(`Unknown cron run: ${runId}`);
     await harness.abortTask(run.taskId, context);
   };
@@ -1311,10 +1374,8 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           result = await listRunLogs(args.jobId, args.limit, args.workspaceId);
           break;
         case "stop-running": {
-          const runs = args.runId
-            ? [(await snapshot()).runs[args.runId]!]
-            : await listRunningCron(args.jobId);
-          for (const run of runs) await stopRunning(run.id);
+          if (args.runId) await stopRunning(args.runId);
+          else for (const run of await listRunningCron(args.jobId)) await stopRunning(run.id);
           result = "Stopped.";
           break;
         }
@@ -1423,6 +1484,12 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           }, ctx);
         },
         afterResponse: async (message, api, ctx) => {
+          if (message.stopReason === "stop" || message.stopReason === "length") {
+            await main.commit(async (tx) => {
+              const doc = await tx.doc(OrchestrationDoc);
+              if (doc.joinParents) delete doc.joinParents[String(api.conversationId)];
+            }, ctx);
+          }
           if (
             api.conversationId !== main.id ||
             (message.stopReason !== "stop" && message.stopReason !== "length")
@@ -1453,6 +1520,38 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       await main.commit(async (tx) => {
         const doc = await tx.doc(OrchestrationDoc);
         doc.mainId = options.mainId ?? main.id;
+        if (!doc.archived) {
+          for (const [id, call] of Object.entries(doc.calls)) {
+            (await tx.doc(DeliveryRecord, id, {})).call = call;
+            if ((await tx.task(call.taskId))?.state.status === "terminal") delete doc.calls[id];
+          }
+          for (const [id, join] of Object.entries(doc.joins ?? {})) {
+            (await tx.doc(DeliveryRecord, id, {})).join = join;
+          }
+          for (const [id, artifacts] of Object.entries(doc.resultArtifacts ?? {})) {
+            (await tx.doc(DeliveryRecord, id, {})).artifacts = artifacts;
+          }
+          delete doc.joins;
+          delete doc.resultArtifacts;
+          for (const [id, input] of Object.entries(doc.joinParents ?? {})) {
+            if (!(await tx.doc(LiveDoc, Number(id) as ConversationId)).run?.inputs.includes(input))
+              delete doc.joinParents![id];
+          }
+          for (const run of Object.values(doc.runs).sort((a, b) => a.startedAt - b.startedAt)) {
+            await indexRun(tx, run);
+            if (run.status !== "running") delete doc.runs[run.id];
+          }
+          for (const [id, worker] of Object.entries(doc.workers)) {
+            if (
+              worker.active === undefined ||
+              (await tx.task(worker.active))?.state.status === "terminal"
+            ) {
+              Object.assign(await tx.doc(ArchivedWorker, id, worker), worker);
+              delete doc.workers[id];
+            }
+          }
+          doc.archived = true;
+        }
       }, context);
       await tick();
       await arm();
@@ -1465,7 +1564,18 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       for (const worker of workers) {
         if (worker.active === undefined) continue;
         const task = await harness.getTask(worker.active, context);
-        if (task?.state.status !== "terminal")
+        if (task?.state.status === "terminal") {
+          await main.commit(async (tx) => {
+            await archiveWorker(tx, String(worker.id), worker.active!);
+            for (const [id, run] of Object.entries((await tx.doc(OrchestrationDoc)).runs)) {
+              if (run.taskId !== worker.active) continue;
+              run.status = "failed";
+              run.finishedAt = Date.now();
+              Object.assign(await tx.doc(ArchivedRun, run.id, run), run);
+              delete (await tx.doc(OrchestrationDoc)).runs[id];
+            }
+          }, context);
+        } else if (task)
           result.push({
             sessionId: String(worker.id),
             conversationId: worker.id,

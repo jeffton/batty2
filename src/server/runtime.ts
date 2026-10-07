@@ -11,13 +11,14 @@ import {
 import {
   createRegistry,
   Harness,
+  LiveDoc,
+  InboxDoc,
   type Conversation,
   type ConversationId,
   type EntryRecord,
   type EntryId,
   type Cursor,
   type Storage,
-  type SubmissionRecord,
   type ConversationView,
   type LiveState,
   type InboxState,
@@ -33,6 +34,8 @@ import { listWorkspaces } from "./workspaces";
 import { normalizeMessage, normalizeBlocks } from "./pi-state";
 import { hydrateRuntimeResultArtifacts } from "./runtime-result-artifacts-history";
 import { queuedPromptDisplay } from "./queued-prompt-display";
+import { createHistoryIndex } from "./history-index";
+import { conversationPolicy } from "./conversation-policy";
 import { ProviderAuthService } from "./provider-auth";
 import { ProviderUsageService } from "./provider-usage";
 import { createTools } from "./tools";
@@ -95,10 +98,12 @@ export async function historyPage(
   before: string | undefined,
   limit: number,
   after?: string,
+  maximum?: number,
 ) {
   const query = {
     conversationId,
-    ...(after ? { minEntryId: Number(after.split(":")[0]) as EntryId } : {}),
+    ...(after ? { minEntryId: (Number(after.split(":")[0]) + 1) as EntryId } : {}),
+    ...(maximum === undefined ? {} : { maxEntryId: maximum as EntryId }),
     ...(before ? { maxEntryId: (Number(before.split(":")[0]) - 1) as EntryId } : {}),
   };
   const target = Math.min(limit, 500);
@@ -126,32 +131,9 @@ export async function historyPage(
   };
 }
 
-function visibleCount(entry: EntryRecord): number {
-  if (entry.model?.length)
-    return entry.model.filter(
-      (message) =>
-        message.role !== "system" && (message as { display?: boolean }).display !== false,
-    ).length;
-  const data = entry.data as Record<string, unknown> | undefined;
-  const original = data?.original as Record<string, unknown> | undefined;
-  return typeof data?.text === "string" ||
-    (original?.type === "custom_message" && original.display !== false)
-    ? 1
-    : 0;
-}
-
 export class Runtime {
   readonly streamId = randomUUID();
   private revision = 0;
-  private readonly messageCounts = new Map<number, number>();
-  private readonly clientIdsByEntry = new Map<string, string>();
-  private readonly clientIdsBySubmission = new Map<number, string>();
-  private rememberSubmission(record: SubmissionRecord): void {
-    if (!record.requestId) return;
-    this.clientIdsBySubmission.set(record.id, record.requestId);
-    if (record.entry !== undefined)
-      this.clientIdsByEntry.set(String(record.entry), record.requestId);
-  }
   private constructor(
     readonly config: AppConfig,
     readonly models: ModelRuntime,
@@ -164,6 +146,7 @@ export class Runtime {
     readonly resources: ReturnType<typeof createResources>,
     readonly providerAuth: ProviderAuthService,
     readonly providerUsage: ProviderUsageService,
+    private readonly historyIndex: Awaited<ReturnType<typeof createHistoryIndex>>,
   ) {}
 
   static async open(
@@ -207,6 +190,7 @@ export class Runtime {
     const database = await openNodeSqliteDatabase(path.join(dir, "runtime.sqlite"));
     await database.exec("PRAGMA synchronous = FULL");
     const storage = await SqliteStorage.open(database);
+    const historyIndex = await createHistoryIndex(database);
     const harness = await Harness.open(
       storage,
       {
@@ -281,43 +265,8 @@ export class Runtime {
       resources,
       providerAuth,
       new ProviderUsageService(models, (id) => readStoredCredential(id, authPath)),
+      historyIndex,
     );
-    harness.subscribeCommits((publication) => {
-      for (const change of publication.changes)
-        if (change.type === "submission") runtime.rememberSubmission(change.value);
-        else if (change.type === "entry")
-          runtime.messageCounts.set(
-            change.value.conversationId,
-            (runtime.messageCounts.get(change.value.conversationId) ?? 0) +
-              visibleCount(change.value),
-          );
-    });
-    let cursor: Cursor | undefined;
-    do {
-      const page = await storage.scanSubmissions({ conversationId: main.id }, 500, cursor, context);
-      for (const submission of page.items) runtime.rememberSubmission(submission);
-      cursor = page.next;
-    } while (cursor);
-    let conversationCursor: Cursor | undefined;
-    do {
-      const conversations = await storage.scanConversations({}, 500, conversationCursor, context);
-      for (const conversation of conversations.items) {
-        let entryCursor: Cursor | undefined;
-        let count = 0;
-        do {
-          const page = await storage.scanEntries(
-            { conversationId: conversation.id },
-            200,
-            entryCursor,
-            context,
-          );
-          count += page.items.reduce((total, entry) => total + visibleCount(entry), 0);
-          entryCursor = page.next;
-        } while (entryCursor);
-        runtime.messageCounts.set(conversation.id, count);
-      }
-      conversationCursor = conversations.next;
-    } while (conversationCursor);
     // bind() admits due cron jobs and can resume the harness itself. Install
     // completion observers before that startup boundary, not only before resume.
     await beforeStart?.(runtime);
@@ -357,22 +306,80 @@ export class Runtime {
     after?: string,
   ): Promise<SessionState> {
     const conversation = await this.conversation(id);
-    const ownedView = view ? undefined : await conversation.viewState(context);
-    const value = view ?? ownedView!.value;
     const agent = await conversation.agent(context);
-    const live = value.docs["pi.live"] as unknown as LiveState;
-    const inbox = value.docs["pi.inbox"] as unknown as InboxState;
+    const live = view
+      ? (view.docs["pi.live"] as unknown as LiveState)
+      : await this.harness.snapshot(LiveDoc, conversation.id, context);
+    const inbox = view
+      ? (view.docs["pi.inbox"] as unknown as InboxState)
+      : await this.harness.snapshot(InboxDoc, conversation.id, context);
     const workspaces = await listWorkspaces(this.config);
     const workspace = workspaces.find((item) => item.path === agent.cwd);
     const model = agent.model && this.models.getModel(agent.model.provider, agent.model.modelId);
+    const boundary = !includeHistory
+      ? undefined
+      : after !== undefined
+        ? await this.historyIndex.nextBoundary(conversation.id, after, PAGE_SIZE)
+        : { end: (await this.historyIndex.latestEntry(conversation.id)) ?? 0, more: false };
     const history = includeHistory
-      ? await historyPage(this.storage, conversation.id, undefined, PAGE_SIZE, after)
+      ? await this.history(
+          conversation.id,
+          undefined,
+          PAGE_SIZE,
+          after,
+          boundary?.end ?? (after === undefined ? undefined : Number(after.split(":")[0])),
+        )
       : undefined;
-    const recentEntries = value.entries.slice(-PAGE_SIZE);
+    const activeTools = await Promise.all(
+      (live?.tools ?? [])
+        .filter((tool) => tool.status !== "done")
+        .map(async (tool) => {
+          const task =
+            tool.taskId === undefined
+              ? undefined
+              : await this.harness.getTask(tool.taskId, context);
+          const assistantId = (task?.input as { assistant: EntryId } | undefined)?.assistant;
+          const entries =
+            assistantId === undefined
+              ? (
+                  await this.storage.scanEntries(
+                    { conversationId: conversation.id },
+                    PAGE_SIZE,
+                    undefined,
+                    context,
+                  )
+                ).items
+              : [(await this.storage.entry(conversation.id, assistantId, context))!.entry];
+          const call = entries
+            .flatMap((entry) => entry.model ?? [])
+            .flatMap((message) => (message.role === "assistant" ? message.content : []))
+            .find((block) => block.type === "toolCall" && block.id === tool.callId);
+          return {
+            toolCallId: tool.callId,
+            toolName: tool.name,
+            args: call?.type === "toolCall" ? call.arguments : {},
+            blocks: normalizeBlocks(tool.output ?? ""),
+            status: "running" as const,
+            isError: false,
+            details: tool.details as Record<string, unknown> | undefined,
+          };
+        }),
+    );
     const all = history?.messages ?? [];
-    const totalMessageCount = this.messageCounts.get(conversation.id) ?? all.length;
-    for (const message of all)
-      if (message.role === "user") message.clientMessageId = this.clientIdsByEntry.get(message.id);
+    const totalMessageCount = await this.historyIndex.count(conversation.id);
+    await this.attachClientIds(conversation.id, all);
+    const queuedClientIds = new Map(
+      await Promise.all(
+        (inbox?.items ?? []).map(
+          async (item) =>
+            [item.id, (await this.storage.submission(item.id, context))?.requestId] as const,
+        ),
+      ),
+    );
+    const worker = await this.orchestration.metadata(conversation.id);
+    const role =
+      conversation.id === this.main.id ? "assistant" : worker?.isCron ? "cron" : "worker";
+    const policy = conversationPolicy(role, workspace?.id);
     const activeAssistant = live?.generation?.message
       ? normalizeMessage(
           live.generation.message as unknown as AgentMessage,
@@ -391,7 +398,7 @@ export class Runtime {
       availableThinkingLevels: model ? getSupportedThinkingLevels(model) : ["off"],
       isStreaming: Boolean(live?.run),
       // Main declines native compaction tasks; only workers produce native summaries.
-      isCompacting: conversation.id !== this.main.id && Boolean(live?.compactions?.length),
+      isCompacting: policy.nativeCompaction && Boolean(live?.compactions?.length),
       memoryPreparation: conversation.id === this.main.id ? this.memory.status() : undefined,
       pendingMessageCount: inbox?.items?.length ?? 0,
       queuedPrompts: (inbox?.items ?? []).flatMap((item) =>
@@ -401,7 +408,7 @@ export class Runtime {
               {
                 kind: item.mode,
                 index: item.id,
-                clientMessageId: this.clientIdsBySubmission.get(item.id),
+                clientMessageId: queuedClientIds.get(item.id),
                 ...queuedPromptDisplay(item.content),
               },
             ],
@@ -412,45 +419,58 @@ export class Runtime {
       contextPercent: null,
       totalMessageCount,
       hasMoreMessages: totalMessageCount > all.length,
+      historyAfter: after,
+      historyCursor: includeHistory
+        ? String(boundary?.end ?? Number(after!.split(":")[0]))
+        : undefined,
+      hasMoreRecentMessages: boundary?.more ?? false,
       messagesDetailLevel: "full",
       messages: all,
       activeAssistant: activeAssistant?.role === "assistant" ? activeAssistant : undefined,
-      activeTools: (live?.tools ?? [])
-        .filter((tool) => tool.status !== "done")
-        .map((tool) => {
-          const call = recentEntries
-            .flatMap((entry) => entry.model ?? [])
-            .flatMap((message) => (message.role === "assistant" ? message.content : []))
-            .find((block) => block.type === "toolCall" && block.id === tool.callId);
-          return {
-            toolCallId: tool.callId,
-            toolName: tool.name,
-            args: call?.type === "toolCall" ? call.arguments : {},
-            blocks: normalizeBlocks(tool.output ?? ""),
-            status: "running" as const,
-            isError: false,
-            details: tool.details as Record<string, unknown> | undefined,
-          };
-        }),
-      title: conversation.id === this.main.id ? "Batty" : "Subagent",
-      isSubagentSession: conversation.id !== this.main.id,
-      isCronSession: (await this.orchestration.metadata(conversation.id))?.isCron,
+      activeTools,
+      title: role === "assistant" ? "Batty" : role === "cron" ? "Cron" : "Subagent",
+      isSubagentSession: role !== "assistant",
+      isCronSession: role === "cron",
       streamId: this.streamId,
       revision: this.nextRevision(),
     };
-    ownedView?.dispose();
     return state;
   }
 
   async messages(id: string, before?: string, limit = PAGE_SIZE): Promise<SessionMessagesPage> {
     const conversation = await this.conversation(id);
-    const page = await historyPage(this.storage, conversation.id, before, limit);
-    for (const message of page.messages)
-      if (message.role === "user") message.clientMessageId = this.clientIdsByEntry.get(message.id);
+    const page = await this.history(conversation.id, before, limit);
+    await this.attachClientIds(conversation.id, page.messages);
     return {
       ...page,
-      totalMessageCount: this.messageCounts.get(conversation.id) ?? page.messages.length,
+      totalMessageCount: await this.historyIndex.count(conversation.id),
     };
+  }
+
+  private async history(
+    conversationId: ConversationId,
+    before: string | undefined,
+    limit: number,
+    after?: string,
+    maximum?: number,
+  ) {
+    const page = await this.historyIndex.entries(conversationId, before, limit, after, maximum);
+    const messages = entryMessages(page.entries);
+    await Promise.all(
+      messages.map((message) =>
+        hydrateRuntimeResultArtifacts(this.storage, conversationId, message),
+      ),
+    );
+    return { messages, hasMoreMessages: page.hasMoreMessages, nextBefore: page.nextBefore };
+  }
+
+  private async attachClientIds(conversationId: ConversationId, messages: UiMessage[]) {
+    const ids = await this.historyIndex.clientIds(
+      conversationId,
+      messages.filter((message) => message.role === "user").map((message) => message.id),
+    );
+    for (const message of messages)
+      if (message.role === "user") message.clientMessageId = ids.get(message.id);
   }
 
   async setModel(modelId: string): Promise<void> {

@@ -58,6 +58,15 @@ function mergeSessionMessages(incoming: SessionState, previous?: SessionState): 
     return incoming.totalMessageCount === 0 ? [] : previous.messages;
   }
 
+  if (incoming.historyAfter !== undefined) {
+    const updated = new Map(incoming.messages.map((message) => [message.id, message]));
+    const previousIds = new Set(previous.messages.map((message) => message.id));
+    return [
+      ...previous.messages.map((message) => updated.get(message.id) ?? message),
+      ...incoming.messages.filter((message) => !previousIds.has(message.id)),
+    ];
+  }
+
   const previousIds = previous.messages.map((message) => message.id);
   const incomingIds = incoming.messages.map((message) => message.id);
   const overlapStart = previousIds.indexOf(incomingIds[0] ?? "");

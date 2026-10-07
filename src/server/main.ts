@@ -5,7 +5,7 @@ import fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import staticFiles from "@fastify/static";
-import type { ModelThinkingLevel, UserMessage } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { loadConfig, resolveBattyDir, readEnvironmentFile, updateEnvironmentFile } from "./config";
 import {
@@ -30,8 +30,8 @@ import { registerMcpRoutes } from "./routes/mcp";
 import { registerMemoryTreeRoutes } from "./routes/memory-tree";
 import { Runtime, context } from "./runtime";
 import { acquireLock } from "./lock";
-import { retainInput } from "./input-receipts";
-import { preparePromptFiles, resolveUploadedFile, type UploadedFile } from "./uploads";
+import { resolveUploadedFile } from "./uploads";
+import { registerSessionRoutes } from "./routes/sessions";
 import { resolveSentFile } from "./send-files";
 import type { AppColor } from "@/shared/appearance";
 import { WebPushService } from "./web-push";
@@ -264,191 +264,7 @@ app.get<{ Params: { workspaceId: string } }>(
 );
 app.get("/api/memory/status", async () => runtime.memory.status());
 app.get("/api/memory/usage", async () => runtime.memory.usage());
-app.get<{ Querystring: { after?: string } }>("/api/main", async (request) =>
-  transcriptImages.state(await runtime.state("main", undefined, true, request.query.after)),
-);
-app.get<{ Querystring: { before?: string; limit?: string } }>(
-  "/api/main/messages",
-  async (request) => {
-    const page = await runtime.messages(
-      "main",
-      request.query.before,
-      request.query.limit ? Number(request.query.limit) : undefined,
-    );
-    return { ...page, messages: await transcriptImages.messages(page.messages) };
-  },
-);
-app.get<{ Params: { sessionId: string } }>("/api/sessions/:sessionId", async (request) =>
-  transcriptImages.state(await runtime.state(request.params.sessionId)),
-);
-app.get<{ Params: { sessionId: string }; Querystring: { before?: string; limit?: string } }>(
-  "/api/sessions/:sessionId/messages",
-  async (request) => {
-    const page = await runtime.messages(
-      request.params.sessionId,
-      request.query.before,
-      request.query.limit ? Number(request.query.limit) : undefined,
-    );
-    return { ...page, messages: await transcriptImages.messages(page.messages) };
-  },
-);
-
-const eventStreams = new Set<import("node:http").ServerResponse>();
-for (const url of ["/api/main/events", "/api/sessions/:sessionId/events"]) {
-  app.get<{ Params: { sessionId?: string }; Querystring: { after?: string } }>(
-    url,
-    async (request, reply) => {
-      const conversation = await runtime.conversation(request.params.sessionId ?? "main");
-      const watch = await conversation.watch(context);
-      reply.hijack();
-      eventStreams.add(reply.raw);
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      let closed = false;
-      let lastEntry: number | undefined;
-      let after = request.query.after;
-      const writeEvent = (event: object) => {
-        if (!closed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-      };
-      let sendQueue = Promise.resolve();
-      const send = (value: typeof watch.value, metadataOnly = false) => {
-        sendQueue = sendQueue
-          .then(async () => {
-            if (closed) return;
-            const tail = value.entries.at(-1)?.id;
-            const reset = !metadataOnly && (lastEntry === undefined || tail !== lastEntry);
-            const state = await transcriptImages.state(
-              await runtime.state(String(conversation.id), value, reset, after),
-            );
-            if (reset) {
-              lastEntry = tail;
-              after = state.messages.at(-1)?.id ?? after;
-              writeEvent({
-                type: "reset",
-                state,
-                streamId: runtime.streamId,
-                revision: state.revision,
-              });
-            } else {
-              const {
-                messages: _messages,
-                messagesDetailLevel: _detail,
-                hasMoreMessages: _more,
-                activeAssistant,
-                activeTools,
-                ...metadata
-              } = state;
-              writeEvent({
-                type: "state",
-                state: metadata,
-                streamId: runtime.streamId,
-                revision: state.revision,
-              });
-              writeEvent({
-                type: "assistant",
-                assistant: activeAssistant,
-                streamId: runtime.streamId,
-                revision: runtime.nextRevision(),
-              });
-              writeEvent({
-                type: "tools",
-                tools: activeTools,
-                streamId: runtime.streamId,
-                revision: runtime.nextRevision(),
-              });
-            }
-          })
-          .catch((error) => {
-            app.log.error(error);
-            writeEvent({ type: "error", message: String(error) });
-          });
-        return sendQueue;
-      };
-      let memoryState = JSON.stringify({
-        pending: runtime.memory.status().pending > 0,
-        error: runtime.memory.status().error,
-      });
-      const memoryTimer = setInterval(() => {
-        const next = JSON.stringify({
-          pending: runtime.memory.status().pending > 0,
-          error: runtime.memory.status().error,
-        });
-        if (next === memoryState) return;
-        memoryState = next;
-        void send(watch.value, true);
-      }, 2000);
-      request.raw.on("close", () => {
-        closed = true;
-        clearInterval(memoryTimer);
-        eventStreams.delete(reply.raw);
-        clearInterval(heartbeat);
-        void watch.stop();
-      });
-      const heartbeat = setInterval(() => {
-        if (!closed) reply.raw.write("event: heartbeat\ndata: {}\n\n");
-      }, 20_000);
-      await send(watch.value);
-      watch.start(async (value, ops) => {
-        if (ops.length) await send(value);
-      });
-    },
-  );
-}
-for (const url of ["/api/main/prompt", "/api/main/steer"]) {
-  app.post(url, async (request) => {
-    let text = "",
-      clientMessageId: string | undefined;
-    const files: UploadedFile[] = [];
-    if (request.isMultipart()) {
-      for await (const part of request.parts()) {
-        if (part.type === "file")
-          files.push({
-            filename: part.filename,
-            mimetype: part.mimetype,
-            data: await part.toBuffer(),
-          });
-        else if (part.fieldname === "text") text = String(part.value);
-        else if (part.fieldname === "clientMessageId") clientMessageId = String(part.value);
-      }
-    } else {
-      const body = request.body as { text: string; clientMessageId?: string };
-      text = body.text;
-      clientMessageId = body.clientMessageId;
-    }
-    if (!text.trim() && !files.length)
-      throw Object.assign(new Error("Missing message"), { statusCode: 400 });
-    const attachments = await preparePromptFiles(
-      config.uploadsDir,
-      String(runtime.main.id),
-      files,
-      config.baseUrl,
-    );
-    const wasBusy = (await runtime.state("main", undefined, false)).isStreaming;
-    const content: UserMessage["content"] = [
-      { type: "text", text: [text, attachments.text].filter(Boolean).join("\n\n") },
-      ...attachments.images,
-    ];
-    const submission = await runtime.main.submit(
-      {
-        type: "input",
-        content,
-        requestId: clientMessageId,
-        whenBusy: url.endsWith("steer") ? "steer" : "followUp",
-      },
-      context,
-    );
-    await retainInput(runtime.main, submission.id, content, clientMessageId);
-    return {
-      disposition: wasBusy ? "queued" : "started",
-      submissionId: String(submission.id),
-      sessionId: String(runtime.main.id),
-    };
-  });
-}
+const closeEventStreams = registerSessionRoutes(app, runtime, transcriptImages);
 app.post("/api/main/stop", async () => {
   await runtime.tools.abortConversation(runtime.main.id);
   await runtime.main.abort(context);
@@ -663,7 +479,7 @@ async function shutdown() {
   // Close the harness first: checkpoint work, do not drain or cancel admitted runs.
   stopPushCompletions();
   await runtime.close();
-  for (const stream of eventStreams) stream.end();
+  closeEventStreams();
   await app.close();
   await releaseLock();
   process.exit(0);

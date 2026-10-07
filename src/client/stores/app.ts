@@ -6,9 +6,13 @@ import { withBaseUrl } from "@/client/lib/base-url";
 import { applyAppAppearance } from "@/client/lib/appearance";
 import * as api from "@/client/lib/api";
 import { applyServerEvent, applySessionResponse } from "@/client/lib/session-events";
+import { prependHistoryPage } from "@/client/lib/session-pagination";
+import { createSessionConnection } from "@/client/lib/session-connection";
+import { recentSessionWindow } from "@/client/lib/session-window";
+import { sessionHistoryCursor } from "@/client/lib/session-stream";
 import { createAppState } from "./app-state";
 import { providerSettingsActions } from "./app-provider-settings";
-import type { BootstrapPayload, ServerEvent } from "@/shared/types";
+import type { BootstrapPayload } from "@/shared/types";
 import {
   clearMainCache,
   readMainCache,
@@ -22,10 +26,9 @@ import {
 let cachedBootstrap: BootstrapPayload | undefined;
 let cacheTimer: ReturnType<typeof setTimeout> | undefined;
 let cacheSubscribed = false;
-let source: EventSource | undefined;
-let watchdog: ReturnType<typeof setInterval> | undefined;
+let connection: ReturnType<typeof createSessionConnection> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-let lastActivity = 0;
+let expandedHistory = false;
 let uploads = 0;
 let updateError: string | undefined;
 let bootstrapping: Promise<void> | undefined;
@@ -118,7 +121,7 @@ export const useAppStore = defineStore("app", {
         if (this.authenticated) {
           this.workspaces = payload.workspaces ?? (await api.listWorkspaces());
           if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
-          const incoming = await api.getMain(this.activeSession?.messages.at(-1)?.id);
+          const incoming = await api.getMain(sessionHistoryCursor(this.activeSession));
           if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
           this.activeSession = applyServerEvent(this.activeSession, {
             type: "reset",
@@ -126,6 +129,7 @@ export const useAppStore = defineStore("app", {
             streamId: incoming.streamId,
             revision: incoming.revision,
           });
+          if (!expandedHistory) this.activeSession = recentSessionWindow(this.activeSession);
           this.openStream();
           void this.populateReadingCache();
           void syncPushSubscription(false).catch((error) => {
@@ -167,20 +171,12 @@ export const useAppStore = defineStore("app", {
         this.activeSession?.hasMoreMessages &&
         (this.activeSession.messages[0]?.timestamp ?? 0) > Date.now() - CACHE_DAY_MS
       ) {
-        const before = this.activeSession.messages[0]?.id;
+        const requested = this.activeSession;
+        const before = requested.messages[0]?.id;
         try {
           const page = await api.getMainMessages({ before, limit: 500 });
           if (this.activeSession?.id !== sessionId || !page.messages.length) break;
-          const latest = this.activeSession;
-          const ids = new Set(latest.messages.map((message) => message.id));
-          this.activeSession = {
-            ...latest,
-            messages: [
-              ...page.messages.filter((message) => !ids.has(message.id)),
-              ...latest.messages,
-            ],
-            hasMoreMessages: page.hasMoreMessages,
-          };
+          this.activeSession = prependHistoryPage(this.activeSession, requested, page);
           if (this.activeSession.messages[0]?.id === before) break;
           await this.persistMainCache();
         } catch (error) {
@@ -208,53 +204,42 @@ export const useAppStore = defineStore("app", {
     },
     openStream() {
       this.closeStream();
-      this.connectionState = "connecting";
-      const after = this.activeSession?.messages.at(-1)?.id;
-      const current = new EventSource(
-        withBaseUrl(`/api/main/events${after ? `?after=${encodeURIComponent(after)}` : ""}`),
-      );
-      source = current;
-      lastActivity = Date.now();
-      const touch = () => {
-        if (source === current) lastActivity = Date.now();
-      };
-      current.addEventListener("heartbeat", touch);
-      watchdog = setInterval(() => {
-        if (document.visibilityState === "hidden") return;
-        if (Date.now() - lastActivity > 65_000) this.openStream();
-        void this.checkForUpdates();
-      }, 15_000);
-      current.onopen = () => {
-        if (source !== current) return;
-        touch();
-        void this.checkForUpdates();
-      };
-      current.onerror = () => {
-        if (source !== current) return;
-        this.connectionState = "offline";
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(() => {
-          if (this.authenticated && navigator.onLine) this.openStream();
-        }, 2000);
-      };
-      current.onmessage = (message) => {
-        if (source !== current) return;
-        touch();
-        const event = JSON.parse(message.data) as ServerEvent;
-        if (event.type !== "error") this.connectionState = "online";
-        if (event.type === "error") this.lastError = event.message;
-        this.activeSession = applyServerEvent(this.activeSession, event);
-      };
+      connection = createSessionConnection({
+        path: () => {
+          const after = sessionHistoryCursor(this.activeSession);
+          return withBaseUrl(
+            `/api/main/events${after ? `?after=${encodeURIComponent(after)}` : ""}`,
+          );
+        },
+        onConnecting: () => {
+          this.connectionState = "connecting";
+        },
+        onOpen: () => {
+          void this.checkForUpdates();
+        },
+        onWatchdog: () => {
+          void this.checkForUpdates();
+        },
+        onError: () => {
+          this.connectionState = "offline";
+        },
+        onEvent: (event) => {
+          if (event.type !== "error") this.connectionState = "online";
+          if (event.type === "error") this.lastError = event.message;
+          this.activeSession = applyServerEvent(this.activeSession, event);
+          if (!expandedHistory) this.activeSession = recentSessionWindow(this.activeSession);
+        },
+      });
+      connection.open();
     },
     closeStream() {
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
-      clearInterval(watchdog);
-      watchdog = undefined;
-      source?.close();
-      source = undefined;
+      connection?.close();
+      connection = undefined;
     },
     async logout() {
+      expandedHistory = false;
       if (cachedBootstrap?.cacheScope)
         localStorage.setItem(REVOKED_CACHE_SCOPE_KEY, cachedBootstrap.cacheScope);
       cachedBootstrap = undefined;
@@ -279,24 +264,18 @@ export const useAppStore = defineStore("app", {
           this.lastError = error instanceof Error ? error.message : String(error);
         });
     },
-    async sendPrompt(text: string, files: File[], clientMessageId: string) {
+    async submitPrompt(
+      mode: "prompt" | "steer",
+      text: string,
+      files: File[],
+      clientMessageId: string,
+    ) {
       if (this.connectionState !== "online" || !navigator.onLine)
         throw new Error("Offline — sending is disabled");
       this.primeNotifications();
       uploads += 1;
       try {
-        return await api.submitMainPrompt("prompt", text, files, clientMessageId);
-      } finally {
-        uploads -= 1;
-      }
-    },
-    async steerPrompt(text: string, files: File[], clientMessageId: string) {
-      if (this.connectionState !== "online" || !navigator.onLine)
-        throw new Error("Offline — sending is disabled");
-      this.primeNotifications();
-      uploads += 1;
-      try {
-        return await api.submitMainPrompt("steer", text, files, clientMessageId);
+        return await api.submitMainPrompt(mode, text, files, clientMessageId);
       } finally {
         uploads -= 1;
       }
@@ -325,17 +304,11 @@ export const useAppStore = defineStore("app", {
       this.loadingOlderMessages = true;
       try {
         const page = await api.getMainMessages({ before: current.messages[0]?.id, limit: 50 });
-        const latest = this.activeSession!;
-        const ids = new Set(latest.messages.map((message) => message.id));
-        this.activeSession = {
-          ...latest,
-          messages: [
-            ...page.messages.filter((message) => !ids.has(message.id)),
-            ...latest.messages,
-          ],
-          hasMoreMessages: page.hasMoreMessages,
-          totalMessageCount: page.totalMessageCount,
-        };
+        if (this.activeSession) {
+          const previous = this.activeSession;
+          this.activeSession = prependHistoryPage(previous, current, page);
+          if (this.activeSession !== previous) expandedHistory = true;
+        }
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
       } finally {

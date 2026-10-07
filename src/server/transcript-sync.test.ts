@@ -48,7 +48,7 @@ test("persisted assistant attempts expose the durable task identity without chan
   expect(JSON.stringify(entries)).toBe(original);
 });
 
-test("delta history includes its anchor and every reconnect gap across invisible records and page boundaries", async () => {
+test("delta history starts after its anchor and crosses invisible records and page boundaries", async () => {
   const storage = new MemoryStorage();
   const harness = await Harness.open(
     storage,
@@ -69,8 +69,9 @@ test("delta history includes its anchor and every reconnect gap across invisible
       }
     }, context);
     const delta = await historyPage(storage, main.id, undefined, 120, anchor);
-    expect(delta.messages).toHaveLength(280);
-    expect(delta.messages[0]!.id).toBe(anchor);
+    expect(delta.messages).toHaveLength(279);
+    expect(delta.messages[0]).toMatchObject({ blocks: [{ type: "text", text: "message 21" }] });
+    expect(delta.messages.some((message) => message.id === anchor)).toBe(false);
     expect(delta.messages.at(-1)).toMatchObject({
       blocks: [{ type: "text", text: "message 299" }],
     });

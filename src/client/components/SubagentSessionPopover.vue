@@ -7,7 +7,9 @@ import SessionTranscriptView from "@/client/components/SessionTranscriptView.vue
 import { getSessionMessages, getSession } from "@/client/lib/api";
 import { applyServerEvent } from "@/client/lib/session-events";
 import { mergeSessionState, normalizeSessionState } from "@/client/lib/session-state";
-import { sessionEventsPath } from "@/client/lib/session-stream";
+import { sessionEventsPath, sessionHistoryCursor } from "@/client/lib/session-stream";
+import { prependHistoryPage } from "@/client/lib/session-pagination";
+import { createSessionConnection } from "@/client/lib/session-connection";
 import { RECENT_SESSION_MESSAGE_WINDOW } from "@/shared/session-history";
 import type { ServerEvent, SessionState } from "@/shared/types";
 
@@ -27,7 +29,7 @@ const loading = ref(false);
 const loadingOlderMessages = ref(false);
 const errorMessage = ref<string | undefined>(undefined);
 const reconnecting = ref(false);
-let eventSource: EventSource | undefined;
+let connection: ReturnType<typeof createSessionConnection> | undefined;
 let loadGeneration = 0;
 
 const connectionState = computed<"online" | "connecting" | "offline">(() => {
@@ -38,15 +40,8 @@ const connectionState = computed<"online" | "connecting" | "offline">(() => {
 });
 
 function closeStream(): void {
-  if (!eventSource) {
-    return;
-  }
-
-  eventSource.onopen = null;
-  eventSource.onmessage = null;
-  eventSource.onerror = null;
-  eventSource.close();
-  eventSource = undefined;
+  connection?.close();
+  connection = undefined;
 }
 
 function applyEvent(event: ServerEvent): void {
@@ -64,31 +59,23 @@ function openStream(): void {
   }
 
   closeStream();
-  reconnecting.value = true;
-  const source = new EventSource(sessionEventsPath(session.value, "full"));
-  eventSource = source;
-  source.onopen = () => {
-    if (eventSource !== source) {
-      return;
-    }
-
-    reconnecting.value = false;
-  };
-  source.onmessage = (message) => {
-    if (eventSource !== source) {
-      return;
-    }
-
-    reconnecting.value = false;
-    applyEvent(JSON.parse(message.data) as ServerEvent);
-  };
-  source.onerror = () => {
-    if (eventSource !== source) {
-      return;
-    }
-
-    reconnecting.value = true;
-  };
+  connection = createSessionConnection({
+    path: () => sessionEventsPath(session.value!, "full", sessionHistoryCursor(session.value)),
+    onConnecting: () => {
+      reconnecting.value = true;
+    },
+    onOpen: () => {
+      reconnecting.value = false;
+    },
+    onError: () => {
+      reconnecting.value = true;
+    },
+    onEvent: (event) => {
+      reconnecting.value = false;
+      applyEvent(event);
+    },
+  });
+  connection.open();
 }
 
 async function ensureSessionLoaded(): Promise<void> {
@@ -139,25 +126,7 @@ async function loadOlderMessages(): Promise<void> {
       limit: RECENT_SESSION_MESSAGE_WINDOW,
     });
     const latest = session.value;
-    if (!latest || latest.sessionId !== current.sessionId) {
-      return;
-    }
-    if (latest.messages[0]?.id !== current.messages[0]?.id) {
-      return;
-    }
-    const existingIds = new Set(latest.messages.map((message) => message.id));
-    const olderMessages = page.messages.filter((message) => !existingIds.has(message.id));
-    const paginationMetadataChanged =
-      latest.totalMessageCount !== current.totalMessageCount ||
-      latest.hasMoreMessages !== current.hasMoreMessages;
-    session.value = normalizeSessionState({
-      ...latest,
-      messages: [...olderMessages, ...latest.messages],
-      totalMessageCount: paginationMetadataChanged
-        ? Math.max(latest.totalMessageCount, page.totalMessageCount)
-        : page.totalMessageCount,
-      hasMoreMessages: paginationMetadataChanged ? latest.hasMoreMessages : page.hasMoreMessages,
-    });
+    if (latest) session.value = prependHistoryPage(latest, current, page);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
   } finally {

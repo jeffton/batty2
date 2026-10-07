@@ -222,7 +222,7 @@ async function reconcileQueuedReceipt(sessionId: string, optimisticId: string): 
   }
 }
 
-async function sendPrompt(text: string, files: File[]): Promise<void> {
+async function submitPrompt(mode: "prompt" | "steer", text: string, files: File[]): Promise<void> {
   const sessionId = store.activeSession?.sessionId;
   const gateSessionId = store.activeSession?.isStreaming
     ? undefined
@@ -233,7 +233,7 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
 
   const requestId = ++promptRequestId;
   promptError.value = undefined;
-  const clientMessageId = promptSubmissionId(sessionId!, "prompt", text, files);
+  const clientMessageId = promptSubmissionId(sessionId!, mode, text, files);
   composer.value?.clear();
   const optimisticId =
     sessionId && !text.trimStart().startsWith("/")
@@ -243,7 +243,7 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
     pendingIdlePromptSessionIds.add(gateSessionId);
   }
   try {
-    const receipt = await store.sendPrompt(text, files, clientMessageId);
+    const receipt = await store.submitPrompt(mode, text, files, clientMessageId);
     // A started receipt can precede SSE publishing the transcript message.
     if (sessionId && optimisticId) {
       setOptimisticDisposition(sessionId, optimisticId, receipt.disposition === "started");
@@ -261,7 +261,7 @@ async function sendPrompt(text: string, files: File[]): Promise<void> {
       if (optimisticId) {
         removeOptimisticMessage(sessionId, optimisticId);
       }
-      retainPromptRetry(sessionId, "prompt", text, files, clientMessageId);
+      retainPromptRetry(sessionId, mode, text, files, clientMessageId);
       composer.value?.restore(sessionId, text, files);
     }
     showPromptError(error, sessionId, requestId);
@@ -297,54 +297,6 @@ async function runAction(action: () => Promise<unknown>): Promise<void> {
 
 async function removeQueuedPrompt(prompt: QueuedPrompt): Promise<void> {
   await runAction(() => store.removeQueuedPrompt(prompt.kind, prompt.index));
-}
-
-async function steerPrompt(text: string, files: File[]): Promise<void> {
-  const sessionId = store.activeSession?.sessionId;
-  const gateSessionId = store.activeSession?.isStreaming
-    ? undefined
-    : store.activeSession?.sessionId;
-  if (gateSessionId && pendingIdlePromptSessionIds.has(gateSessionId)) {
-    return;
-  }
-
-  const requestId = ++promptRequestId;
-  promptError.value = undefined;
-  const clientMessageId = promptSubmissionId(sessionId!, "steer", text, files);
-  composer.value?.clear();
-  const optimisticId =
-    sessionId && !text.trimStart().startsWith("/")
-      ? addOptimisticMessage(sessionId, clientMessageId, text, files)
-      : undefined;
-  if (gateSessionId) {
-    pendingIdlePromptSessionIds.add(gateSessionId);
-  }
-  try {
-    const receipt = await store.steerPrompt(text, files, clientMessageId);
-    if (sessionId && optimisticId) {
-      setOptimisticDisposition(sessionId, optimisticId, receipt.disposition === "started");
-    }
-    clearPromptRetry(sessionId!, clientMessageId);
-    if (receipt.disposition === "queued" && sessionId && optimisticId) {
-      await reconcileQueuedReceipt(sessionId, optimisticId);
-    }
-  } catch (error) {
-    if (sessionId && wasPromptAccepted(sessionId, clientMessageId)) {
-      clearPromptRetry(sessionId, clientMessageId);
-      return;
-    }
-    if (sessionId) {
-      if (optimisticId) removeOptimisticMessage(sessionId, optimisticId);
-      retainPromptRetry(sessionId, "steer", text, files, clientMessageId);
-      composer.value?.restore(sessionId, text, files);
-    }
-    showPromptError(error, sessionId, requestId);
-    throw error;
-  } finally {
-    if (gateSessionId) {
-      pendingIdlePromptSessionIds.delete(gateSessionId);
-    }
-  }
 }
 </script>
 
@@ -391,8 +343,8 @@ async function steerPrompt(text: string, files: File[]): Promise<void> {
         :thinking-options="thinkingOptions"
         :model-button-label="modelButtonLabel"
         :thinking-button-label="thinkingButtonLabel"
-        @submit="sendPrompt"
-        @steer="steerPrompt"
+        @submit="(text, files) => submitPrompt('prompt', text, files)"
+        @steer="(text, files) => submitPrompt('steer', text, files)"
         @stop="runAction(() => store.stopActiveSession())"
         @remove-queued-prompt="removeQueuedPrompt"
         @refresh-models="runAction(() => store.refreshModels())"

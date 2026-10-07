@@ -495,7 +495,9 @@ describe("durable tool bridge", () => {
     await (
       await main.submit({ type: "input", content: "launch" }, BACKGROUND_CONTEXT)
     ).wait(BACKGROUND_CONTEXT);
-    const state = (await harness.snapshot(OrchestrationDoc, BACKGROUND_CONTEXT))!;
+    const state = await (
+      await import("./orchestration-test-history")
+    ).orchestrationHistory(harness);
     expect(Object.keys(state.workers)).toHaveLength(2);
     expect(Object.keys(state.calls)).toHaveLength(2);
     const view = await main.viewState(BACKGROUND_CONTEXT);
