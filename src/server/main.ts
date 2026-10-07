@@ -23,6 +23,7 @@ import { verifyAuthToken, authCacheScope } from "./auth";
 import { TranscriptImages, imagePreview } from "./transcript-images";
 import { createLoginRateLimiter } from "./login-rate-limit";
 import { registerAuthRoutes } from "./routes/auth";
+import { registerBrowserErrorRoutes } from "./browser-errors";
 import { registerCronRoutes } from "./routes/cron";
 import { registerSiteRoutes } from "./routes/sites";
 import { registerMcpRoutes } from "./routes/mcp";
@@ -85,6 +86,14 @@ app.addHook("onRequest", async (request, reply) => {
   request.auth = verifyAuthToken(config.authSecret, request.cookies[config.cookieName]);
   const pathname = request.url.split("?", 1)[0]!;
   if (pathname.startsWith("/api/")) reply.header("Cache-Control", "no-store");
+  const correlationId = request.headers["x-batty-correlation-id"];
+  if (
+    request.auth &&
+    ["/api/main/prompt", "/api/main/steer"].includes(pathname) &&
+    typeof correlationId === "string" &&
+    /^[a-f0-9-]{36}$/.test(correlationId)
+  )
+    request.log.info({ correlationId }, "Browser submission");
   if (pathname.startsWith("/api/") && !publicApis.has(pathname) && !request.auth)
     return reply.code(401).send({ error: "Authentication required" });
 });
@@ -96,6 +105,7 @@ const routeContext = {
   routePath: (route: string) => route,
 };
 registerAuthRoutes(routeContext);
+registerBrowserErrorRoutes(app, path.join(stateDirPath(config.battyDir), "browser-errors.json"));
 registerCronRoutes(app, runtime.orchestration);
 registerSiteRoutes(routeContext);
 registerMcpRoutes({ ...routeContext, mcp: runtime.tools.mcp });

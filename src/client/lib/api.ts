@@ -27,6 +27,16 @@ import type {
 } from "@/shared/types";
 
 import type { MemoryTreeOverview, MemoryTreeExpansion } from "@/shared/memory-tree";
+import { authorizeErrorReporting, reportBrowserError } from "./browser-errors";
+
+class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 export function getMemoryTree(): Promise<MemoryTreeOverview> {
   return request("/api/memory/tree");
@@ -47,7 +57,7 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => ({ error: response.statusText }))) as {
       error?: string;
     };
-    throw new Error(body.error || response.statusText);
+    throw new HttpError(body.error || response.statusText, response.status);
   }
 
   return (await response.json()) as T;
@@ -82,7 +92,10 @@ export function deletePushSubscription(endpoint: string): Promise<{ ok: true }> 
 }
 
 export function getBootstrap(): Promise<BootstrapPayload> {
-  return request("/api/bootstrap");
+  return request<BootstrapPayload>("/api/bootstrap").then((payload) => {
+    authorizeErrorReporting(payload.authenticated);
+    return payload;
+  });
 }
 
 export function getModels(): Promise<ModelOption[]> {
@@ -227,6 +240,7 @@ export function finishPasskeyRegistration(
 }
 
 export function logout(): Promise<{ ok: true }> {
+  authorizeErrorReporting(false);
   return request("/api/logout", {
     method: "POST",
   });
@@ -361,23 +375,39 @@ export async function submitMainPrompt(
   files: File[],
   clientMessageId: string,
 ): Promise<{ disposition: "started" | "queued"; submissionId: string; sessionId: string }> {
-  const body = new FormData();
-  body.set("text", text);
-  body.set("clientMessageId", clientMessageId);
-  for (const file of files) {
-    // WebKit can lose disk-backed multipart bodies in service-worker-controlled
-    // pages (WebKit #319985). Detach the bytes before handing them to fetch.
-    const upload =
-      /AppleWebKit/.test(navigator.userAgent) &&
-      !/(Chrome|Chromium|Edg|OPR)\//.test(navigator.userAgent)
-        ? new File([await file.arrayBuffer()], file.name, {
-            type: file.type,
-            lastModified: file.lastModified,
-          })
-        : file;
-    body.append("files", upload, file.name);
+  const correlationId = crypto.randomUUID();
+  let stage: "file-read" | "submit" = "file-read";
+  try {
+    const body = new FormData();
+    body.set("text", text);
+    body.set("clientMessageId", clientMessageId);
+    for (const file of files) {
+      // WebKit can lose disk-backed multipart bodies in service-worker-controlled
+      // pages (WebKit #319985). Detach the bytes before handing them to fetch.
+      const upload =
+        /AppleWebKit/.test(navigator.userAgent) &&
+        !/(Chrome|Chromium|Edg|OPR)\//.test(navigator.userAgent)
+          ? new File([await file.arrayBuffer()], file.name, {
+              type: file.type,
+              lastModified: file.lastModified,
+            })
+          : file;
+      body.append("files", upload, file.name);
+    }
+    stage = "submit";
+    return await request(`/api/main/${kind}`, {
+      method: "POST",
+      body,
+      headers: { "X-Batty-Correlation-ID": correlationId },
+    });
+  } catch (error) {
+    reportBrowserError(error, stage, {
+      correlationId,
+      status: error instanceof HttpError ? error.status : undefined,
+      hasFiles: files.length > 0,
+    });
+    throw error;
   }
-  return request(`/api/main/${kind}`, { method: "POST", body });
 }
 export function stopMain(): Promise<{ ok: true }> {
   return request("/api/main/stop", { method: "POST" });

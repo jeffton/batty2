@@ -29,7 +29,8 @@ describe("multipart prompt uploads", () => {
       expect(upload.lastModified).toBe(file.lastModified);
       expect(body.get("text")).toBe(text);
       expect(body.get("clientMessageId")).toBe("receipt");
-      expect(init!.headers).toBeUndefined();
+      expect(new Headers(init!.headers).has("Content-Type")).toBe(false);
+      expect(new Headers(init!.headers).get("X-Batty-Correlation-ID")).toMatch(/^[a-f0-9-]{36}$/);
       return Response.json({ disposition: "queued", submissionId: "42", sessionId: "1" });
     });
     expect(await submitMainPrompt(kind, text, [file], "receipt")).toEqual({

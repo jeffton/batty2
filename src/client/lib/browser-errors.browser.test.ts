@@ -1,0 +1,138 @@
+// @vitest-environment node
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import fastify from "fastify";
+import { chromium } from "patchright";
+import { createServer } from "vite";
+import { expect, test } from "vite-plus/test";
+import { registerBrowserErrorRoutes } from "@/server/browser-errors";
+
+test("browser rejection and caught upload failure reach authenticated server without content", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-errors-"));
+  const file = path.join(dir, "browser-errors.json");
+  const backend = fastify();
+  backend.decorateRequest("auth", false);
+  backend.addHook("onRequest", async (req) => {
+    req.auth = req.headers.cookie === "fixture=authenticated";
+  });
+  registerBrowserErrorRoutes(backend, file);
+  backend.addContentTypeParser(/^multipart\/form-data/, (_req, _body, done) =>
+    done(null, undefined),
+  );
+  backend.get("/api/bootstrap", async () => ({ authenticated: true }));
+  backend.post("/api/main/prompt", async (_req, reply) =>
+    reply.code(413).send({ error: "PRIVATE prompt token=secret" }),
+  );
+  await backend.listen({ host: "127.0.0.1", port: 0 });
+  const address = backend.server.address() as { port: number };
+  const server = await createServer({
+    configFile: false,
+    cacheDir: path.resolve("node_modules/.vite-browser-errors-tests"),
+    resolve: { alias: { "@": path.resolve("src") } },
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+      proxy: { "/api": { target: `http://127.0.0.1:${address.port}`, changeOrigin: false } },
+    },
+  });
+  await server.listen();
+  const url = server.resolvedUrls!.local[0]!;
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  await context.addCookies([{ name: "fixture", value: "authenticated", url }]);
+  const page = await context.newPage();
+  try {
+    await page.goto(`${url}src/client/lib/BrowserErrors.fixture.html`);
+    await page.waitForFunction(() => Boolean((window as any).diagnosticsFixture));
+    await page.evaluate(
+      () => {
+        setTimeout(() => {
+          void Promise.reject(new TypeError("Load failed"));
+        }, 0);
+      },
+      undefined,
+      undefined,
+      false,
+    );
+    const caught = await page.evaluate(
+      async () => {
+        try {
+          await (window as any).diagnosticsFixture.submitMainPrompt(
+            "prompt",
+            "PRIVATE prompt",
+            [new File(["PRIVATE bytes"], "PRIVATE.jpg")],
+            "receipt",
+          );
+        } catch (error) {
+          return (error as Error).message;
+        }
+      },
+      undefined,
+      undefined,
+      false,
+    );
+    expect(caught).toBe("PRIVATE prompt token=secret");
+    await page.evaluate(
+      async () => {
+        setTimeout(() => {
+          throw new ReferenceError("PRIVATE window failure");
+        }, 0);
+        (window as any).diagnosticsFixture.app.config.errorHandler(
+          new TypeError("PRIVATE Vue failure"),
+        );
+        Object.defineProperty(navigator, "userAgent", { value: "iPhone AppleWebKit Safari" });
+        const file = new File(["PRIVATE bytes"], "PRIVATE.jpg");
+        file.arrayBuffer = async () => {
+          throw new DOMException("PRIVATE file failure", "NotReadableError");
+        };
+        try {
+          await (window as any).diagnosticsFixture.submitMainPrompt(
+            "prompt",
+            "",
+            [file],
+            "file-receipt",
+          );
+        } catch (error) {
+          if ((error as Error).name !== "NotReadableError") throw error;
+        }
+      },
+      undefined,
+      undefined,
+      false,
+    );
+    await expect
+      .poll(async () => {
+        try {
+          return JSON.parse(await fs.readFile(file, "utf8")).length;
+        } catch {
+          return 0;
+        }
+      })
+      .toBe(5);
+    const reports = JSON.parse(await fs.readFile(file, "utf8"));
+    expect(reports.map((r: any) => r.stage).sort()).toEqual([
+      "file-read",
+      "submit",
+      "unhandledrejection",
+      "vue",
+      "window",
+    ]);
+    expect(reports.find((r: any) => r.stage === "file-read")).toMatchObject({
+      errorName: "NotReadableError",
+      platform: "iOS",
+      browser: "WebKit",
+    });
+    expect(reports.find((r: any) => r.stage === "submit")).toMatchObject({
+      status: 413,
+      hasFiles: true,
+      buildId: "dev",
+    });
+    expect(JSON.stringify(reports)).not.toMatch(/PRIVATE|secret|receipt/);
+    expect(reports.every((r: any) => /^[a-f0-9-]{36}$/.test(r.correlationId))).toBe(true);
+  } finally {
+    await browser.close();
+    await server.close();
+    await backend.close();
+  }
+}, 30_000);
