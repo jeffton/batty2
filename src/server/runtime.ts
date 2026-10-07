@@ -92,9 +92,11 @@ export async function historyPage(
   conversationId: ConversationId,
   before: string | undefined,
   limit: number,
+  after?: string,
 ) {
   const query = {
     conversationId,
+    ...(after ? { minEntryId: Number(after.split(":")[0]) as EntryId } : {}),
     ...(before ? { maxEntryId: (Number(before.split(":")[0]) - 1) as EntryId } : {}),
   };
   const target = Math.min(limit, 500);
@@ -104,14 +106,14 @@ export async function historyPage(
   do {
     const page = await storage.scanEntries(
       query,
-      Math.max(1, target - messages.length),
+      after ? 200 : Math.max(1, target - messages.length),
       cursor,
       context,
     );
     oldest = page.items.at(-1)?.id ?? oldest;
     messages.unshift(...entryMessages([...page.items].reverse()));
     cursor = page.next;
-  } while (messages.length < target && cursor);
+  } while ((after !== undefined || messages.length < target) && cursor);
   await Promise.all(
     messages.map((message) => hydrateRuntimeResultArtifacts(storage, conversationId, message)),
   );
@@ -346,7 +348,12 @@ export class Runtime {
     return ++this.revision;
   }
 
-  async state(id = "main", view?: ConversationView, includeHistory = true): Promise<SessionState> {
+  async state(
+    id = "main",
+    view?: ConversationView,
+    includeHistory = true,
+    after?: string,
+  ): Promise<SessionState> {
     const conversation = await this.conversation(id);
     const ownedView = view ? undefined : await conversation.viewState(context);
     const value = view ?? ownedView!.value;
@@ -357,7 +364,7 @@ export class Runtime {
     const workspace = workspaces.find((item) => item.path === agent.cwd);
     const model = agent.model && this.models.getModel(agent.model.provider, agent.model.modelId);
     const history = includeHistory
-      ? await historyPage(this.storage, conversation.id, undefined, PAGE_SIZE)
+      ? await historyPage(this.storage, conversation.id, undefined, PAGE_SIZE, after)
       : undefined;
     const recentEntries = value.entries.slice(-PAGE_SIZE);
     const all = history?.messages ?? [];
@@ -404,7 +411,7 @@ export class Runtime {
       totalMessageCount,
       hasMoreMessages: totalMessageCount > all.length,
       messagesDetailLevel: "full",
-      messages: all.slice(-PAGE_SIZE),
+      messages: all,
       activeAssistant: activeAssistant?.role === "assistant" ? activeAssistant : undefined,
       activeTools: (live?.tools ?? [])
         .filter((tool) => tool.status !== "done")

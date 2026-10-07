@@ -19,7 +19,8 @@ import {
 import { listWorkspaces } from "./workspaces";
 import { changeAssistantWorkspace } from "./assistant-settings";
 import { PasskeyAuthService, formatSetupCode } from "./passkeys";
-import { verifyAuthToken } from "./auth";
+import { verifyAuthToken, authCacheScope } from "./auth";
+import { TranscriptImages, imagePreview } from "./transcript-images";
 import { createLoginRateLimiter } from "./login-rate-limit";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerCronRoutes } from "./routes/cron";
@@ -49,6 +50,9 @@ const runtime = await Runtime.open(config, {
     );
   },
 });
+const transcriptImages = new TranscriptImages(
+  path.join(stateDirPath(config.battyDir), "transcript-images"),
+);
 const passkeys = new PasskeyAuthService(config.battyDir, config.authSecret);
 const setup = await passkeys.initialize();
 if (setup)
@@ -80,6 +84,7 @@ const publicApis = new Set([
 app.addHook("onRequest", async (request, reply) => {
   request.auth = verifyAuthToken(config.authSecret, request.cookies[config.cookieName]);
   const pathname = request.url.split("?", 1)[0]!;
+  if (pathname.startsWith("/api/")) reply.header("Cache-Control", "no-store");
   if (pathname.startsWith("/api/") && !publicApis.has(pathname) && !request.auth)
     return reply.code(401).send({ error: "Authentication required" });
 });
@@ -137,6 +142,7 @@ app.get("/api/version", async (_request, reply) => {
 });
 app.get("/api/bootstrap", async (request) => ({
   authenticated: request.auth,
+  ...(request.auth ? authCacheScope(config.authSecret, request.cookies[config.cookieName]!) : {}),
   auth: request.auth
     ? await passkeys.getStatus()
     : {
@@ -247,126 +253,139 @@ app.get<{ Params: { workspaceId: string } }>(
   },
 );
 app.get("/api/memory/status", async () => runtime.memory.status());
-app.get("/api/main", async () => runtime.state());
+app.get<{ Querystring: { after?: string } }>("/api/main", async (request) =>
+  transcriptImages.state(await runtime.state("main", undefined, true, request.query.after)),
+);
 app.get<{ Querystring: { before?: string; limit?: string } }>(
   "/api/main/messages",
-  async (request) =>
-    runtime.messages(
+  async (request) => {
+    const page = await runtime.messages(
       "main",
       request.query.before,
       request.query.limit ? Number(request.query.limit) : undefined,
-    ),
+    );
+    return { ...page, messages: await transcriptImages.messages(page.messages) };
+  },
 );
 app.get<{ Params: { sessionId: string } }>("/api/sessions/:sessionId", async (request) =>
-  runtime.state(request.params.sessionId),
+  transcriptImages.state(await runtime.state(request.params.sessionId)),
 );
 app.get<{ Params: { sessionId: string }; Querystring: { before?: string; limit?: string } }>(
   "/api/sessions/:sessionId/messages",
-  async (request) =>
-    runtime.messages(
+  async (request) => {
+    const page = await runtime.messages(
       request.params.sessionId,
       request.query.before,
       request.query.limit ? Number(request.query.limit) : undefined,
-    ),
+    );
+    return { ...page, messages: await transcriptImages.messages(page.messages) };
+  },
 );
 
 const eventStreams = new Set<import("node:http").ServerResponse>();
 for (const url of ["/api/main/events", "/api/sessions/:sessionId/events"]) {
-  app.get<{ Params: { sessionId?: string } }>(url, async (request, reply) => {
-    const conversation = await runtime.conversation(request.params.sessionId ?? "main");
-    const watch = await conversation.watch(context);
-    reply.hijack();
-    eventStreams.add(reply.raw);
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    let closed = false;
-    let lastEntry: number | undefined;
-    const writeEvent = (event: object) => {
-      if (!closed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-    };
-    let sendQueue = Promise.resolve();
-    const send = (value: typeof watch.value, metadataOnly = false) => {
-      sendQueue = sendQueue
-        .then(async () => {
-          if (closed) return;
-          const tail = value.entries.at(-1)?.id;
-          const reset = !metadataOnly && (lastEntry === undefined || tail !== lastEntry);
-          const state = await runtime.state(String(conversation.id), value, reset);
-          if (reset) {
-            lastEntry = tail;
-            writeEvent({
-              type: "reset",
-              state,
-              streamId: runtime.streamId,
-              revision: state.revision,
-            });
-          } else {
-            const {
-              messages: _messages,
-              messagesDetailLevel: _detail,
-              hasMoreMessages: _more,
-              activeAssistant,
-              activeTools,
-              ...metadata
-            } = state;
-            writeEvent({
-              type: "state",
-              state: metadata,
-              streamId: runtime.streamId,
-              revision: state.revision,
-            });
-            writeEvent({
-              type: "assistant",
-              assistant: activeAssistant,
-              streamId: runtime.streamId,
-              revision: runtime.nextRevision(),
-            });
-            writeEvent({
-              type: "tools",
-              tools: activeTools,
-              streamId: runtime.streamId,
-              revision: runtime.nextRevision(),
-            });
-          }
-        })
-        .catch((error) => {
-          app.log.error(error);
-          writeEvent({ type: "error", message: String(error) });
-        });
-      return sendQueue;
-    };
-    let memoryState = JSON.stringify({
-      pending: runtime.memory.status().pending > 0,
-      error: runtime.memory.status().error,
-    });
-    const memoryTimer = setInterval(() => {
-      const next = JSON.stringify({
+  app.get<{ Params: { sessionId?: string }; Querystring: { after?: string } }>(
+    url,
+    async (request, reply) => {
+      const conversation = await runtime.conversation(request.params.sessionId ?? "main");
+      const watch = await conversation.watch(context);
+      reply.hijack();
+      eventStreams.add(reply.raw);
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      let closed = false;
+      let lastEntry: number | undefined;
+      let after = request.query.after;
+      const writeEvent = (event: object) => {
+        if (!closed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+      let sendQueue = Promise.resolve();
+      const send = (value: typeof watch.value, metadataOnly = false) => {
+        sendQueue = sendQueue
+          .then(async () => {
+            if (closed) return;
+            const tail = value.entries.at(-1)?.id;
+            const reset = !metadataOnly && (lastEntry === undefined || tail !== lastEntry);
+            const state = await transcriptImages.state(
+              await runtime.state(String(conversation.id), value, reset, after),
+            );
+            if (reset) {
+              lastEntry = tail;
+              after = state.messages.at(-1)?.id ?? after;
+              writeEvent({
+                type: "reset",
+                state,
+                streamId: runtime.streamId,
+                revision: state.revision,
+              });
+            } else {
+              const {
+                messages: _messages,
+                messagesDetailLevel: _detail,
+                hasMoreMessages: _more,
+                activeAssistant,
+                activeTools,
+                ...metadata
+              } = state;
+              writeEvent({
+                type: "state",
+                state: metadata,
+                streamId: runtime.streamId,
+                revision: state.revision,
+              });
+              writeEvent({
+                type: "assistant",
+                assistant: activeAssistant,
+                streamId: runtime.streamId,
+                revision: runtime.nextRevision(),
+              });
+              writeEvent({
+                type: "tools",
+                tools: activeTools,
+                streamId: runtime.streamId,
+                revision: runtime.nextRevision(),
+              });
+            }
+          })
+          .catch((error) => {
+            app.log.error(error);
+            writeEvent({ type: "error", message: String(error) });
+          });
+        return sendQueue;
+      };
+      let memoryState = JSON.stringify({
         pending: runtime.memory.status().pending > 0,
         error: runtime.memory.status().error,
       });
-      if (next === memoryState) return;
-      memoryState = next;
-      void send(watch.value, true);
-    }, 2000);
-    request.raw.on("close", () => {
-      closed = true;
-      clearInterval(memoryTimer);
-      eventStreams.delete(reply.raw);
-      clearInterval(heartbeat);
-      void watch.stop();
-    });
-    const heartbeat = setInterval(() => {
-      if (!closed) reply.raw.write("event: heartbeat\ndata: {}\n\n");
-    }, 20_000);
-    await send(watch.value);
-    watch.start(async (value, ops) => {
-      if (ops.length) await send(value);
-    });
-  });
+      const memoryTimer = setInterval(() => {
+        const next = JSON.stringify({
+          pending: runtime.memory.status().pending > 0,
+          error: runtime.memory.status().error,
+        });
+        if (next === memoryState) return;
+        memoryState = next;
+        void send(watch.value, true);
+      }, 2000);
+      request.raw.on("close", () => {
+        closed = true;
+        clearInterval(memoryTimer);
+        eventStreams.delete(reply.raw);
+        clearInterval(heartbeat);
+        void watch.stop();
+      });
+      const heartbeat = setInterval(() => {
+        if (!closed) reply.raw.write("event: heartbeat\ndata: {}\n\n");
+      }, 20_000);
+      await send(watch.value);
+      watch.start(async (value, ops) => {
+        if (ops.length) await send(value);
+      });
+    },
+  );
 }
 for (const url of ["/api/main/prompt", "/api/main/steer"]) {
   app.post(url, async (request) => {
@@ -547,27 +566,50 @@ app.post<{ Body: { content: string } }>("/api/settings/agents", async (request) 
 });
 app.get("/api/auth/status", async () => passkeys.getStatus());
 app.post("/api/auth/setup-code", async () => passkeys.issueSetupCode("settings"));
-app.get<{ Params: { sessionId: string; batchId: string; name: string } }>(
-  "/api/uploads/:sessionId/:batchId/:name",
+app.get<{ Params: { imageId: string }; Querystring: { preview?: string } }>(
+  "/api/transcript-images/:imageId",
   async (request, reply) => {
-    const file = await resolveUploadedFile(
-      config.uploadsDir,
-      request.params.sessionId,
-      request.params.batchId,
-      request.params.name,
+    const file = await transcriptImages.resolve(
+      request.params.imageId,
+      request.query.preview === "1",
     );
-    return reply.type(file.mimeType).send(createReadStream(file.path));
+    return reply
+      .header("Cache-Control", "no-store")
+      .type(file.mimeType)
+      .send(createReadStream(file.path));
   },
 );
 app.get<{
+  Params: { sessionId: string; batchId: string; name: string };
+  Querystring: { preview?: string };
+}>("/api/uploads/:sessionId/:batchId/:name", async (request, reply) => {
+  const file = await resolveUploadedFile(
+    config.uploadsDir,
+    request.params.sessionId,
+    request.params.batchId,
+    request.params.name,
+  );
+  if (request.query.preview === "1" && file.mimeType.startsWith("image/"))
+    return reply
+      .type("image/webp")
+      .header("Cache-Control", "no-store")
+      .send(await imagePreview(file.path));
+  return reply.type(file.mimeType).send(createReadStream(file.path));
+});
+app.get<{
   Params: { workspaceId: string; sessionId: string; toolCallId: string; fileId: string };
-  Querystring: { download?: string };
+  Querystring: { download?: string; preview?: string };
 }>("/api/sent-files/:workspaceId/:sessionId/:toolCallId/:fileId", async (request, reply) => {
   const file = await resolveSentFile({
     rootDir: config.sentFilesDir,
     baseUrl: config.baseUrl,
     ...request.params,
   });
+  if (request.query.preview === "1" && file.descriptor.kind === "image")
+    return reply
+      .type("image/webp")
+      .header("Cache-Control", "no-store")
+      .send(await imagePreview(file.storedPath));
   reply.type(file.descriptor.mimeType);
   if (request.query.download)
     reply.header(

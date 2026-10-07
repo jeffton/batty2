@@ -27,6 +27,11 @@ renderer.link = function (this: typeof renderer, { href, title, tokens }: Tokens
   return `<a target="_blank" rel="noopener noreferrer" href="${escapeAttribute(href)}"${titleAttribute}>${this.parser.parseInline(tokens)}</a>`;
 };
 
+renderer.image = ({ href, title, text }: Tokens.Image): string => {
+  const titleAttribute = title ? ` title="${escapeAttribute(title)}"` : "";
+  return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text)}"${titleAttribute} loading="lazy" decoding="async" fetchpriority="low">`;
+};
+
 const markdown = new Marked({
   breaks: true,
   gfm: true,

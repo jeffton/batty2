@@ -72,7 +72,11 @@ defineExpose({
         :scroll-ref="transcript ?? undefined"
       >
         <template #default="{ item: displayEntry }">
-          <div :key="entryKey(displayEntry)" class="transcript__item">
+          <div
+            :key="entryKey(displayEntry)"
+            :data-entry-key="entryKey(displayEntry)"
+            class="transcript__item"
+          >
             <ChatMessage
               v-if="displayEntry.kind === 'message'"
               :message="displayEntry.entry.message"
@@ -95,6 +99,7 @@ defineExpose({
         <div
           v-for="displayEntry in props.tailEntries"
           :key="entryKey(displayEntry)"
+          :data-entry-key="entryKey(displayEntry)"
           class="transcript__item"
         >
           <ChatMessage

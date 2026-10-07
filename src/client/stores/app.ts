@@ -6,12 +6,25 @@ import { withBaseUrl } from "@/client/lib/base-url";
 import { applyAppAppearance } from "@/client/lib/appearance";
 import * as api from "@/client/lib/api";
 import { applyServerEvent, applySessionResponse } from "@/client/lib/session-events";
-import { mergeSessionState } from "@/client/lib/session-state";
 import { createAppState } from "./app-state";
 import { providerSettingsActions } from "./app-provider-settings";
-import type { ServerEvent } from "@/shared/types";
+import type { BootstrapPayload, ServerEvent } from "@/shared/types";
+import {
+  clearMainCache,
+  readMainCache,
+  saveMainCache,
+  CACHE_DAY_MS,
+  CACHE_EPOCH_KEY,
+  REVOKED_CACHE_SCOPE_KEY,
+  registerMainCacheBootstrap,
+  authorizePreviewCache,
+} from "@/client/lib/main-cache";
+let cachedBootstrap: BootstrapPayload | undefined;
+let cacheTimer: ReturnType<typeof setTimeout> | undefined;
+let cacheSubscribed = false;
 let source: EventSource | undefined;
 let watchdog: ReturnType<typeof setInterval> | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let lastActivity = 0;
 let uploads = 0;
 let updateError: string | undefined;
@@ -29,8 +42,72 @@ export const useAppStore = defineStore("app", {
       return bootstrapping;
     },
     async loadBootstrap() {
+      if (!cacheSubscribed) {
+        cacheSubscribed = true;
+        navigator.serviceWorker?.addEventListener("controllerchange", () => {
+          if (cachedBootstrap) authorizePreviewCache(cachedBootstrap);
+        });
+        window.addEventListener("storage", (event) => {
+          if (event.key !== CACHE_EPOCH_KEY) return;
+          cachedBootstrap = undefined;
+          clearTimeout(cacheTimer);
+          cacheTimer = undefined;
+          this.closeStream();
+          this.authenticated = false;
+          this.activeSession = undefined;
+          this.connectionState = "offline";
+        });
+        this.$subscribe(
+          () => {
+            if (cacheTimer !== undefined) return;
+            cacheTimer = setTimeout(() => {
+              cacheTimer = undefined;
+              void this.persistMainCache();
+            }, 1000);
+          },
+          { detached: true },
+        );
+      }
+      let authEpoch = localStorage.getItem(CACHE_EPOCH_KEY);
+      if (!this.bootstrapped) {
+        try {
+          const cached = await readMainCache();
+          if (cached) {
+            if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
+            cachedBootstrap = cached.bootstrap;
+            this.authenticated = true;
+            this.bootstrapped = true;
+            this.settings = cached.bootstrap.settings;
+            this.models = cached.bootstrap.models;
+            this.workspaces = cached.bootstrap.workspaces;
+            this.auth = cached.bootstrap.auth;
+            this.providerAuth = cached.bootstrap.providerAuth;
+            this.activeSession = cached.session;
+            this.connectionState = "offline";
+            applyAppAppearance(this.settings.appearance);
+          }
+        } catch (error) {
+          this.lastError = `Local cache: ${String(error)}`;
+        }
+      }
+      authEpoch = localStorage.getItem(CACHE_EPOCH_KEY);
       try {
         const payload = await api.getBootstrap();
+        if (payload.cacheScope === localStorage.getItem(REVOKED_CACHE_SCOPE_KEY))
+          payload.authenticated = false;
+        if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
+        if (cachedBootstrap?.cacheScope && cachedBootstrap.cacheScope !== payload.cacheScope) {
+          this.activeSession = undefined;
+          this.authenticated = false;
+          authEpoch = crypto.randomUUID();
+          const replacementEpoch = await clearMainCache(authEpoch);
+          if (replacementEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
+          authEpoch = replacementEpoch;
+          this.activeSession = undefined;
+        }
+        if (payload.authenticated) registerMainCacheBootstrap();
+        cachedBootstrap = payload.authenticated ? payload : undefined;
+        if (cachedBootstrap) authorizePreviewCache(cachedBootstrap);
         this.authenticated = payload.authenticated;
         this.bootstrapped = true;
         this.auth = payload.auth;
@@ -39,23 +116,79 @@ export const useAppStore = defineStore("app", {
         this.models = payload.models;
         applyAppAppearance(this.settings.appearance);
         if (this.authenticated) {
-          this.workspaces = await api.listWorkspaces();
-          this.activeSession = mergeSessionState(await api.getMain(), this.activeSession);
+          this.workspaces = payload.workspaces ?? (await api.listWorkspaces());
+          if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
+          const incoming = await api.getMain(this.activeSession?.messages.at(-1)?.id);
+          if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
+          this.activeSession = applyServerEvent(this.activeSession, {
+            type: "reset",
+            state: incoming,
+            streamId: incoming.streamId,
+            revision: incoming.revision,
+          });
           this.openStream();
+          void this.populateReadingCache();
           void syncPushSubscription(false).catch((error) => {
             this.lastError = error instanceof Error ? error.message : String(error);
           });
         } else {
           this.closeStream();
           this.activeSession = undefined;
+          authEpoch = crypto.randomUUID();
+          await clearMainCache(authEpoch);
         }
         this.bootstrapFailed = false;
         this.lastError = undefined;
       } catch (error) {
+        if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
         this.bootstrapFailed = true;
         this.lastError = error instanceof Error ? error.message : String(error);
         this.connectionState = "offline";
+        if (this.authenticated && this.activeSession) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            void this.recoverConnection();
+          }, 3000);
+        }
       }
+    },
+    async persistMainCache() {
+      if (!cachedBootstrap || !this.authenticated || !this.activeSession) return;
+      try {
+        await saveMainCache(cachedBootstrap, this.activeSession);
+      } catch (error) {
+        this.lastError = `Local cache: ${String(error)}`;
+      }
+    },
+    async populateReadingCache() {
+      const sessionId = this.activeSession?.id;
+      while (
+        this.activeSession?.id === sessionId &&
+        this.activeSession?.hasMoreMessages &&
+        (this.activeSession.messages[0]?.timestamp ?? 0) > Date.now() - CACHE_DAY_MS
+      ) {
+        const before = this.activeSession.messages[0]?.id;
+        try {
+          const page = await api.getMainMessages({ before, limit: 500 });
+          if (this.activeSession?.id !== sessionId || !page.messages.length) break;
+          const latest = this.activeSession;
+          const ids = new Set(latest.messages.map((message) => message.id));
+          this.activeSession = {
+            ...latest,
+            messages: [
+              ...page.messages.filter((message) => !ids.has(message.id)),
+              ...latest.messages,
+            ],
+            hasMoreMessages: page.hasMoreMessages,
+          };
+          if (this.activeSession.messages[0]?.id === before) break;
+          await this.persistMainCache();
+        } catch (error) {
+          this.lastError = `Reading history: ${String(error)}`;
+          break;
+        }
+      }
+      await this.persistMainCache();
     },
     async recoverConnection() {
       if (this.bootstrapFailed || !this.bootstrapped || !this.activeSession) await this.bootstrap();
@@ -76,7 +209,10 @@ export const useAppStore = defineStore("app", {
     openStream() {
       this.closeStream();
       this.connectionState = "connecting";
-      const current = new EventSource(withBaseUrl("/api/main/events"));
+      const after = this.activeSession?.messages.at(-1)?.id;
+      const current = new EventSource(
+        withBaseUrl(`/api/main/events${after ? `?after=${encodeURIComponent(after)}` : ""}`),
+      );
       source = current;
       lastActivity = Date.now();
       const touch = () => {
@@ -91,28 +227,40 @@ export const useAppStore = defineStore("app", {
       current.onopen = () => {
         if (source !== current) return;
         touch();
-        this.connectionState = "online";
         void this.checkForUpdates();
       };
       current.onerror = () => {
         if (source !== current) return;
-        this.connectionState = navigator.onLine ? "connecting" : "offline";
+        this.connectionState = "offline";
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          if (this.authenticated && navigator.onLine) this.openStream();
+        }, 2000);
       };
       current.onmessage = (message) => {
         if (source !== current) return;
         touch();
         const event = JSON.parse(message.data) as ServerEvent;
+        if (event.type !== "error") this.connectionState = "online";
         if (event.type === "error") this.lastError = event.message;
         this.activeSession = applyServerEvent(this.activeSession, event);
       };
     },
     closeStream() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
       clearInterval(watchdog);
       watchdog = undefined;
       source?.close();
       source = undefined;
     },
     async logout() {
+      if (cachedBootstrap?.cacheScope)
+        localStorage.setItem(REVOKED_CACHE_SCOPE_KEY, cachedBootstrap.cacheScope);
+      cachedBootstrap = undefined;
+      clearTimeout(cacheTimer);
+      cacheTimer = undefined;
+      await clearMainCache();
       await unregisterPushSubscription();
       await api.logout();
       this.closeStream();
@@ -132,6 +280,8 @@ export const useAppStore = defineStore("app", {
         });
     },
     async sendPrompt(text: string, files: File[], clientMessageId: string) {
+      if (this.connectionState !== "online" || !navigator.onLine)
+        throw new Error("Offline — sending is disabled");
       this.primeNotifications();
       uploads += 1;
       try {
@@ -141,6 +291,8 @@ export const useAppStore = defineStore("app", {
       }
     },
     async steerPrompt(text: string, files: File[], clientMessageId: string) {
+      if (this.connectionState !== "online" || !navigator.onLine)
+        throw new Error("Offline — sending is disabled");
       this.primeNotifications();
       uploads += 1;
       try {

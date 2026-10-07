@@ -18,6 +18,14 @@ State lives in `/var/lib/batty2/.batty`; source lives in `/root/github/batty2`. 
 
 Outgoing prompts appear immediately, including attachment names, and survive page refresh until the server publishes the matching user message. Failed submissions restore the draft; cancelled queued prompts remove their outgoing entry.
 
+## Offline reading
+
+The main thread opens from an authentication-scoped IndexedDB cache before network requests. It fills at least the latest 24 hours, retains up to seven days within a 32 MiB soft budget, and reports an error rather than exceeding 128 MiB or dropping the latest day. Browser quota failures preserve the previous complete cache. Logout invalidates cached reading across tabs; worker sessions are excluded, while their main-thread notices remain.
+
+Reconnect requests use the last durable message ID and an inclusive overlap record. Existing IDs and live state are updated without resending the accumulated conversation. Older history loads in pages. Sending requires a live connection; offline drafts are not queued for delivery.
+
+Images use lazy 768-pixel WebP previews with links to originals. The service worker stores up to 128 private previews per authentication scope, including across worker restarts. Historical rows are virtualized; eight tail rows remain mounted. Run `node scripts/verify-offline.mjs` after `pnpm build` to exercise production offline reload, private preview access and incremental reconnect.
+
 ## Cron CLI
 
 Deployment installs `/usr/local/bin/batty2`. It authenticates with the local state secret and calls the running service's cron runtime; it never opens another scheduler.

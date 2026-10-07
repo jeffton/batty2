@@ -27,6 +27,14 @@ export function createAuthToken(secret: string, ttlMs = 1000 * 60 * 60 * 24 * 30
   return `${encodedPayload}.${signature}`;
 }
 
+export function authCacheScope(
+  secret: string,
+  token: string,
+): { cacheScope: string; cacheExpiresAt: number } {
+  const payload = JSON.parse(decode(token.split(".")[0]!)) as TokenPayload;
+  return { cacheScope: sign(secret, `local-cache:${token}`), cacheExpiresAt: payload.expiresAt };
+}
+
 export function verifyAuthToken(secret: string, token?: string): boolean {
   if (!token) {
     return false;

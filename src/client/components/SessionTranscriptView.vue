@@ -17,7 +17,9 @@ import type { TranscriptMessageView } from "@/client/lib/transcript";
 
 const TRANSCRIPT_BOTTOM_THRESHOLD = 12;
 const TRANSCRIPT_LOAD_OLDER_THRESHOLD = 80;
-const TRANSCRIPT_TAIL_COUNT = 25;
+// Keep streaming rows outside the virtualizer without retaining a screenful
+// of full image/tool components after they have scrolled out of view.
+const TRANSCRIPT_TAIL_COUNT = 8;
 const USER_SCROLL_INTENT_WINDOW_MS = 1000;
 const TIMESTAMP_GROUP_WINDOW_MS = 10 * 60 * 1000;
 
@@ -58,6 +60,7 @@ let olderMessagesLoadSessionId: string | null = null;
 let olderMessagesRetrySessionId: string | null = null;
 let transcriptNearTop = false;
 let followTranscriptToken = 0;
+let restoreVisibleAnchorToken = 0;
 let lastUserScrollIntentAt = 0;
 
 const toolStateLookup = computed(() =>
@@ -408,7 +411,9 @@ async function scrollToBottom(behavior: ScrollBehavior = "auto"): Promise<void> 
     return;
   }
 
+  const token = followTranscriptToken;
   await waitForTranscriptLayout();
+  if (token !== followTranscriptToken || !isTranscriptPinnedToBottom.value) return;
 
   const element = transcriptRootElement();
   if (!element) {
@@ -416,6 +421,7 @@ async function scrollToBottom(behavior: ScrollBehavior = "auto"): Promise<void> 
   }
 
   for (let attempts = 0; attempts < 3; attempts += 1) {
+    if (token !== followTranscriptToken || !isTranscriptPinnedToBottom.value) return;
     const scrollBehavior = attempts === 0 ? behavior : "auto";
     const bottomOffset = Math.max(0, element.scrollHeight - element.clientHeight);
     element.scrollTo({ top: bottomOffset, behavior: scrollBehavior });
@@ -447,34 +453,9 @@ async function followTranscriptWhilePinned(behavior: ScrollBehavior = "auto"): P
     return;
   }
 
-  const token = ++followTranscriptToken;
+  // Content/signature changes and ResizeObserver drive follow-up scrolling.
+  // An idle stream must not force layout on every display frame.
   await scrollToBottom(behavior);
-
-  while (token === followTranscriptToken) {
-    await nextAnimationFrame();
-
-    if (!props.session?.isStreaming || !isTranscriptPinnedToBottom.value) {
-      return;
-    }
-
-    const element = transcriptRootElement();
-    if (!element) {
-      return;
-    }
-
-    const bottomOffset = Math.max(0, element.scrollHeight - element.clientHeight);
-    element.scrollTop = bottomOffset;
-
-    const bottomElement = transcriptBottomElement();
-    if (bottomElement) {
-      const transcriptRect = element.getBoundingClientRect();
-      const sentinelRect = bottomElement.getBoundingClientRect();
-      const sentinelDistanceFromBottom = transcriptRect.bottom - sentinelRect.bottom;
-      if (sentinelDistanceFromBottom < 0) {
-        element.scrollTop += -sentinelDistanceFromBottom;
-      }
-    }
-  }
 }
 
 function canLoadOlderMessages(element: HTMLElement): boolean {
@@ -631,6 +612,43 @@ onUnmounted(() => {
   transcriptViewportObserver?.disconnect();
   transcriptTailObserver?.disconnect();
 });
+
+// Moving a row from the live tail into history changes the virtualizer's
+// estimated height. Preserve the reader's visible row, not that estimate.
+watch(
+  transcriptEntries,
+  async () => {
+    const token = ++restoreVisibleAnchorToken;
+    const sessionId = props.session?.sessionId;
+    if (isTranscriptPinnedToBottom.value || props.loadingOlderMessages) return;
+    const element = transcriptRootElement();
+    if (!element) return;
+    const top = element.getBoundingClientRect().top;
+    const anchor = Array.from(element.querySelectorAll<HTMLElement>("[data-entry-key]")).find(
+      (row) => row.getBoundingClientRect().bottom > top,
+    );
+    if (!anchor) return;
+    const key = anchor.dataset.entryKey;
+    const anchorTop = anchor.getBoundingClientRect().top;
+    const intentAt = lastUserScrollIntentAt;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await waitForTranscriptLayout();
+      if (
+        token !== restoreVisibleAnchorToken ||
+        props.session?.sessionId !== sessionId ||
+        isTranscriptPinnedToBottom.value ||
+        lastUserScrollIntentAt !== intentAt
+      )
+        return;
+      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-entry-key]")).find(
+        (candidate) => candidate.dataset.entryKey === key,
+      );
+      if (!row) return;
+      element.scrollTop += row.getBoundingClientRect().top - anchorTop;
+    }
+  },
+  { flush: "pre" },
+);
 
 watch(transcriptPane, () => {
   bindTranscriptScrollListener();

@@ -3,7 +3,14 @@ import type { AppAppearance } from "./appearance";
 
 export type UiContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; mimeType: string; data?: string; url?: string; name?: string }
+  | {
+      type: "image";
+      mimeType: string;
+      data?: string;
+      url?: string;
+      previewUrl?: string;
+      name?: string;
+    }
   | { type: "attachment"; file: SentFileDescriptor }
   | { type: "thinking"; thinking: string }
   | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
@@ -435,6 +442,8 @@ export type { McpExposure, McpServerConfig };
 
 export interface BootstrapPayload {
   authenticated: boolean;
+  cacheScope?: string;
+  cacheExpiresAt?: number;
   auth: AuthStatus;
   providerAuth: ProviderAuthStatus;
   settings: AppSettingsStatus;

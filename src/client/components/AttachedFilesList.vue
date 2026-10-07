@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TranscriptImage from "./TranscriptImage.vue";
 import type { SentFileDescriptor } from "@/shared/types";
 
 const props = withDefaults(
@@ -53,13 +54,11 @@ function formatFileSize(size: number): string {
 <template>
   <div :class="['attached-files', props.compact ? 'attached-files--compact' : '']">
     <article v-for="file in props.files" :key="file.id" class="attached-files__card">
-      <img
+      <TranscriptImage
         v-if="props.preview && file.kind === 'image' && file.previewUrl"
-        :src="file.previewUrl"
+        :src="`${file.previewUrl}${file.previewUrl.includes('?') ? '&' : '?'}preview=1`"
+        :original-url="file.downloadUrl"
         :alt="file.name"
-        class="attached-files__preview"
-        loading="lazy"
-        decoding="async"
       />
       <video
         v-else-if="props.preview && file.kind === 'video' && file.previewUrl"

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <body>
+    <script type="module">
+      import { reactive } from "vue";
+      import {
+        readMainCache,
+        saveMainCache,
+        clearMainCache,
+        retainCacheRecords,
+        registerMainCacheBootstrap,
+        CACHE_BYTE_BUDGET,
+        CACHE_DAY_MS,
+      } from "./main-cache.ts";
+      window.cache = {
+        reactive,
+        readMainCache,
+        saveMainCache,
+        clearMainCache,
+        retainCacheRecords,
+        registerMainCacheBootstrap,
+        CACHE_BYTE_BUDGET,
+        CACHE_DAY_MS,
+      };
+    </script>
+  </body>
+</html>

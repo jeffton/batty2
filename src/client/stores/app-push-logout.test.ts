@@ -3,6 +3,16 @@ import { beforeEach, expect, test, vi } from "vite-plus/test";
 import { logout } from "@/client/lib/api";
 import { unregisterPushSubscription } from "@/client/lib/push-notifications";
 import { useAppStore } from "./app";
+vi.mock("@/client/lib/main-cache", () => ({
+  CACHE_DAY_MS: 86_400_000,
+  CACHE_EPOCH_KEY: "batty:main-cache-epoch",
+  REVOKED_CACHE_SCOPE_KEY: "batty:revoked-cache-scope",
+  registerMainCacheBootstrap: vi.fn(),
+  authorizePreviewCache: vi.fn(),
+  readMainCache: vi.fn(),
+  saveMainCache: vi.fn(),
+  clearMainCache: vi.fn(),
+}));
 
 vi.mock("@/client/lib/api", () => ({ logout: vi.fn() }));
 vi.mock("@/client/lib/push-notifications", () => ({

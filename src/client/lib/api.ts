@@ -39,6 +39,7 @@ export function expandMemoryNode(id: number, count: number): Promise<MemoryTreeE
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(withBaseUrl(input), {
     credentials: "include",
+    signal: !init?.method || init.method === "GET" ? AbortSignal.timeout(20_000) : undefined,
     ...init,
   });
 
@@ -335,8 +336,8 @@ export function getMemoryStatus(): Promise<{
   return request("/api/memory/status");
 }
 
-export function getMain(): Promise<SessionState> {
-  return request("/api/main");
+export function getMain(after?: string): Promise<SessionState> {
+  return request(`/api/main${after ? `?after=${encodeURIComponent(after)}` : ""}`);
 }
 export function getMainMessages(options: {
   before?: string;

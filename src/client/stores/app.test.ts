@@ -8,6 +8,16 @@ import App from "@/client/App.vue";
 import ChatHeader from "@/client/components/ChatHeader.vue";
 import ChatSessionPane from "@/client/components/ChatSessionPane.vue";
 import { useAppStore } from "./app";
+vi.mock("@/client/lib/main-cache", () => ({
+  CACHE_DAY_MS: 86_400_000,
+  CACHE_EPOCH_KEY: "batty:main-cache-epoch",
+  REVOKED_CACHE_SCOPE_KEY: "batty:revoked-cache-scope",
+  registerMainCacheBootstrap: vi.fn(),
+  authorizePreviewCache: vi.fn(),
+  readMainCache: vi.fn(),
+  saveMainCache: vi.fn(),
+  clearMainCache: vi.fn(),
+}));
 import { applyServerEvent } from "@/client/lib/session-events";
 import type { BootstrapPayload, SessionState } from "@/shared/types";
 
@@ -225,6 +235,40 @@ describe("stream recovery", () => {
 });
 
 describe("authentication recovery", () => {
+  it("does not accept an authenticated bootstrap response across logout invalidation", async () => {
+    let resolve!: (payload: BootstrapPayload) => void;
+    vi.mocked(api.getBootstrap).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const store = useAppStore();
+    const pending = store.bootstrap();
+    await flushPromises();
+    localStorage.setItem("batty:main-cache-epoch", "logged-out");
+    resolve(bootstrap);
+    await pending;
+    expect(store.authenticated).toBe(false);
+    expect(store.activeSession).toBeUndefined();
+    expect(api.getMain).not.toHaveBeenCalled();
+  });
+  it("does not reopen a stream when main history arrives after logout", async () => {
+    let resolve!: (value: SessionState) => void;
+    vi.mocked(api.getMain).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const store = useAppStore();
+    const pending = store.bootstrap();
+    await flushPromises();
+    store.authenticated = false;
+    localStorage.setItem("batty:main-cache-epoch", "logged-out");
+    resolve(state());
+    await pending;
+    expect(store.activeSession).toBeUndefined();
+    expect(store.authenticated).toBe(false);
+  });
   it("coalesces concurrent resume and version-check bootstrap recovery", async () => {
     const check = vi.spyOn(updates, "checkAppUpdate").mockResolvedValue();
     let resolve!: (payload: BootstrapPayload) => void;

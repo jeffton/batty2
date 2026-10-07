@@ -10,6 +10,7 @@ import ReplyActions from "@/client/components/ReplyActions.vue";
 import SharedSitesList from "@/client/components/SharedSitesList.vue";
 import SubagentSessionPopover from "@/client/components/SubagentSessionPopover.vue";
 import ToolCallBlock from "@/client/components/ToolCallBlock.vue";
+import TranscriptImage from "@/client/components/TranscriptImage.vue";
 import { isAttachmentOutputToolCall } from "@/client/lib/transcript";
 import type { ToolDisplayState } from "@/client/lib/transcript";
 import type { SentFileDescriptor, SiteDescriptor, UiContentBlock, UiMessage } from "@/shared/types";
@@ -471,12 +472,11 @@ onBeforeUnmount(() => {
             :key="`${segmentIndex}-${blockIndex}`"
           >
             <MarkdownBlock v-if="block.type === 'text'" :text="block.text" />
-            <img
+            <TranscriptImage
               v-else-if="block.type === 'image'"
-              :src="imageUrl(block)"
+              :src="block.previewUrl ?? imageUrl(block)"
+              :original-url="imageUrl(block)"
               :alt="block.name ?? 'Message attachment'"
-              loading="lazy"
-              decoding="async"
             />
             <MarkdownBlock
               v-else-if="block.type === 'thinking'"
@@ -576,12 +576,11 @@ onBeforeUnmount(() => {
         :key="`${props.message.id}-${index}`"
       >
         <div v-if="block.type === 'text'" class="message__text">{{ block.text }}</div>
-        <img
+        <TranscriptImage
           v-else-if="block.type === 'image'"
-          :src="imageUrl(block)"
+          :src="block.previewUrl ?? imageUrl(block)"
+          :original-url="imageUrl(block)"
           :alt="block.name ?? 'Message attachment'"
-          loading="lazy"
-          decoding="async"
         />
         <AttachedFilesList
           v-else-if="block.type === 'attachment'"
@@ -804,10 +803,5 @@ onBeforeUnmount(() => {
   .message__notice-btn:hover {
     background: color-mix(in srgb, var(--color-bg-inline-code) 90%, currentColor);
   }
-}
-
-img {
-  max-width: min(100%, 32rem);
-  border-radius: 0.45rem;
 }
 </style>

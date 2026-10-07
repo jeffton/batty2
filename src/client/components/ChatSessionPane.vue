@@ -43,7 +43,7 @@ const activeOptimisticMessages = computed(() => {
       )
     : [];
 });
-const isUnavailable = computed(() => store.connectionState === "offline");
+const isUnavailable = computed(() => store.connectionState !== "online");
 
 watch(
   [() => store.activeSession?.sessionId, isUnavailable],

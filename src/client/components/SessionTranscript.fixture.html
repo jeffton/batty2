@@ -74,6 +74,35 @@
           };
         if (detail === "switch") session.value = { ...session.value, id: "other", sessionId: "2" };
         if (detail === "always") always.value = true;
+        if (detail === "long")
+          session.value = {
+            ...session.value,
+            id: "long",
+            sessionId: "long",
+            isStreaming: true,
+            messages: Array.from({ length: 2000 }, (_, index) => ({
+              id: `long-${index}`,
+              role: "user",
+              timestamp: index * 600001,
+              blocks: [
+                { type: "text", text: `Long message ${index}` },
+                {
+                  type: "image",
+                  name: `Image ${index}`,
+                  mimeType: "image/svg+xml",
+                  url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4000' height='3000'%3E%3Crect width='4000' height='3000' fill='teal'/%3E%3C/svg%3E",
+                },
+              ],
+            })),
+          };
+        if (detail === "append")
+          session.value = {
+            ...session.value,
+            messages: [
+              ...session.value.messages,
+              { ...user, id: "appended", timestamp: Date.now() },
+            ],
+          };
       });
       createApp({
         setup: () => () =>
