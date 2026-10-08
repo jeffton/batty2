@@ -397,7 +397,7 @@ test("full rebuild derives a fresh generation only from originals, preserves IDs
   ).toContain("new decision");
 });
 
-test("resume repairs oversize UTF-8 nodes and their valid-sized ancestors despite completed levels", async () => {
+test("resume honors persisted repairs while accepting complete oversized candidates", async () => {
   const f = await fixture();
   let state = await f.open({
     compress: async (source) =>
@@ -421,6 +421,7 @@ test("resume repairs oversize UTF-8 nodes and their valid-sized ancestors despit
     total: number;
     status: "pending" | "complete";
     level?: number;
+    repairs?: string[];
   }>({
     kind: "batty.memory-rebuild",
     version: 1,
@@ -435,18 +436,19 @@ test("resume repairs oversize UTF-8 nodes and their valid-sized ancestors despit
       total: 2,
       status: "pending",
       level: 4,
+      repairs: ["0+1", "0+2"],
     });
     (await tx.doc(MemoryNodesDoc, state.main.id, "g1:0+1", { text: "" })).text = "ø".repeat(50);
     (await tx.doc(MemoryNodesDoc, state.main.id, "g1:1+1", { text: "" })).text = "valid child";
     (await tx.doc(MemoryNodesDoc, state.main.id, "g1:0+2", { text: "" })).text = "STALE PARENT";
   }, context);
-  await expect(state.memory.rebuild()).rejects.toThrow("exceeds 80 UTF-8 bytes");
+  await state.memory.rebuild();
   expect(
     (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context))?.text,
   ).toBe(`repaired child ${"x".repeat(60)}`);
-  expect(
-    (await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation,
-  ).toBeUndefined();
+  expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation).toBe(
+    1,
+  );
   await state.memory.close();
   await state.harness.close(context);
   state = await f.open();
@@ -456,13 +458,12 @@ test("resume repairs oversize UTF-8 nodes and their valid-sized ancestors despit
   );
   for (const key of ["g1:0+1", "g1:1+1", "g1:0+2"]) {
     const node = await state.harness.snapshot(MemoryNodesDoc, state.main.id, key, context);
-    expect(utf8Bytes(node!.text)).toBeLessThanOrEqual(80);
     expect(node!.text).not.toContain("STALE PARENT");
   }
   expect(await state.memory.zoom(0, 1)).toBe(original);
 });
 
-test("oversize custom compression leaves rebuild pending and old generation active", async () => {
+test("oversize custom compression completes rebuild and publishes the shortest complete candidate", async () => {
   const f = await fixture();
   let fail = false;
   const state = await f.open({ compress: async () => (fail ? "ø".repeat(41) : "valid summary") });
@@ -480,13 +481,13 @@ test("oversize custom compression leaves rebuild pending and old generation acti
   );
   await state.memory.prepare();
   fail = true;
-  await expect(state.memory.rebuild()).rejects.toThrow("exceeds 80 UTF-8 bytes");
+  await state.memory.rebuild();
+  expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation).toBe(
+    1,
+  );
   expect(
-    (await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation,
-  ).toBeUndefined();
-  expect(
-    await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context),
-  ).toBeUndefined();
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context))?.text,
+  ).toBe("ø".repeat(41));
   fail = false;
   await state.memory.rebuild();
   expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation).toBe(
