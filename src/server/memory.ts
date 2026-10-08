@@ -65,6 +65,7 @@ type MemoryIndex = {
   viewCount: number;
   parts: Part[];
   generation?: number;
+  merging?: boolean;
 };
 type MemoryRebuild = {
   generation: number;
@@ -248,11 +249,13 @@ export function planNoiseCleanup(
   return { excluded, affected: affected.size, updates };
 }
 export const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
+export type ViewBatch = { merging?: boolean };
 export function fitView(
   parts: Part[],
   total: number,
   nodes: Pick<ReadonlyMap<string, string>, "get" | "has">,
   budget = VIEW_BYTES,
+  batch: ViewBatch = {},
 ): Part[] {
   const result = parts.map((part) => ({ ...part }));
   // Invisible leaves must not grow the cover indefinitely when its text is empty.
@@ -277,7 +280,9 @@ export function fitView(
       (sum, part) => sum + utf8Bytes(nodes.get(key(part)) ?? "(not summarized yet: zoom it)"),
       0,
     );
-  while (size() > budget) {
+  if (size() > budget) batch.merging = true;
+  const target = budget / 2;
+  while (batch.merging && size() > target) {
     let best = -1;
     let weight = -1;
     for (let i = 0; i + 1 < result.length; i++) {
@@ -290,7 +295,8 @@ export function fitView(
         !nodes.has(key({ start: a.start, count: a.count * 2 }))
       )
         continue;
-      const due = (total - a.start) / (a.count * 4);
+      // Zero-based archive: total is the exclusive end, as is the pair's end.
+      const due = (total - (b.start + b.count)) / a.count;
       if (due > weight) {
         best = i;
         weight = due;
@@ -300,6 +306,7 @@ export function fitView(
     const part = result[best]!;
     result.splice(best, 2, { start: part.start, count: part.count * 2 });
   }
+  if (size() <= target) batch.merging = false;
   return result;
 }
 export function renderView(
@@ -515,6 +522,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
     total: number,
     context: Context,
     generation = index.generation ?? 0,
+    batch: ViewBatch = index,
   ) {
     const available = new Map<string, string>();
     let result = parts;
@@ -532,7 +540,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
           if (text !== undefined) available.set(key(parent), text);
         }
       }
-      const next = fitView(result, total, available, budget);
+      const next = fitView(result, total, available, budget, batch);
       if (next.length === result.length) return next;
       result = next;
     }
@@ -778,6 +786,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       const draft = await tx.doc(Index, main.id);
       draft.viewCount = index.viewCount;
       draft.parts = index.parts;
+      draft.merging = index.merging;
     }, context);
     await refreshOverview(context);
     await releaseTrackers(true);
@@ -932,9 +941,10 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }, context);
     }
     let parts: Part[] = [];
+    const batch: ViewBatch = {};
     for (let start = 0; start < job.total; start++) {
       parts.push({ start, count: 1 });
-      parts = await fitParts(parts, start + 1, context, job.generation);
+      parts = await fitParts(parts, start + 1, context, job.generation, batch);
     }
     await exclusive(async () => {
       await main.commit(async (tx) => {
@@ -942,6 +952,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
         draft.generation = job.generation;
         draft.viewCount = job.total;
         draft.parts = parts;
+        draft.merging = batch.merging;
         (await tx.doc(Rebuild, main.id)).status = "complete";
         Object.assign(await tx.doc(Maintenance, main.id), {
           generation: job.generation,
@@ -951,6 +962,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       index.generation = job.generation;
       index.viewCount = job.total;
       index.parts = parts;
+      index.merging = batch.merging;
       maintenance = { generation: job.generation, settled: job.total };
       await refreshOverview(context);
       console.log("OptChat full rebuild activated:", rebuildProgress);

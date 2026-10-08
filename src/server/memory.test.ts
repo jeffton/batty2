@@ -28,6 +28,7 @@ import {
   utf8Bytes,
   MemoryNodesDoc,
   MemoryMaintenanceDoc,
+  MemoryIndexDoc,
   type MemoryConfig,
 } from "./memory.js";
 
@@ -120,6 +121,60 @@ test("most-due sibling merge preserves a complete aligned cover and measures UTF
   expect(parts).toHaveLength(8);
 });
 
+test("view batches trigger strictly above the limit and preserve the prefix between batches", () => {
+  const parts = Array.from({ length: 8 }, (_, start) => ({ start, count: 1 }));
+  const nodes = new Map(parts.map((part) => [`${part.start}+1`, "x".repeat(16_000)]));
+  for (let count = 2; count <= 8; count *= 2)
+    for (let start = 0; start < 8; start += count) nodes.set(`${start}+${count}`, "m".repeat(512));
+  expect(fitView(parts, 8, nodes)).toEqual(parts); // Exactly 128,000 bytes.
+  nodes.set("7+1", "x".repeat(16_001));
+  const fitted = fitView(parts, 8, nodes);
+  const bytes = fitted.reduce(
+    (sum, part) => sum + utf8Bytes(nodes.get(`${part.start}+${part.count}`)!),
+    0,
+  );
+  expect(bytes).toBeLessThanOrEqual(64_000);
+  nodes.set("8+1", "next message");
+  const appended = [...fitted, { start: 8, count: 1 }];
+  expect(fitView(appended, 9, nodes)).toEqual(appended);
+});
+
+test("an unfinished batch resumes below the trigger when its parents become available", () => {
+  const parts = Array.from({ length: 8 }, (_, start) => ({ start, count: 1 }));
+  const nodes = new Map(parts.map((part) => [`${part.start}+1`, "x".repeat(20)]));
+  nodes.set("0+2", "m");
+  const batch = {};
+  const partial = fitView(parts, 8, nodes, 150, batch);
+  expect(partial).toHaveLength(7); // 121 bytes: below trigger, above 75-byte target.
+  expect(batch).toEqual({ merging: true });
+  // Persisted state survives a restart, without requiring the original parts.
+  const resumedBatch = JSON.parse(JSON.stringify(batch));
+  for (let start = 2; start < 8; start += 2) nodes.set(`${start}+2`, "m");
+  const resumed = fitView(partial, 8, nodes, 150, resumedBatch);
+  expect(
+    resumed.reduce((sum, part) => sum + utf8Bytes(nodes.get(`${part.start}+${part.count}`)!), 0),
+  ).toBeLessThanOrEqual(75);
+  expect(resumedBatch.merging).toBe(false);
+});
+
+test("merge age is normalized by line size, with oldest-first ties", () => {
+  const parts = [
+    { start: 0, count: 4 },
+    { start: 4, count: 4 },
+    { start: 8, count: 4 },
+    { start: 12, count: 1 },
+    { start: 13, count: 1 },
+  ];
+  const nodes = new Map(parts.map((part) => [`${part.start}+${part.count}`, "x".repeat(40)]));
+  nodes.set("0+8", "m");
+  nodes.set("12+2", "m");
+  // At T=16 both pairs are two line-sizes old; the older pair wins the tie.
+  expect(fitView(parts, 16, nodes, 330, { merging: true })).toEqual([
+    { start: 0, count: 8 },
+    ...parts.slice(2),
+  ]);
+});
+
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "batty-memory-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -181,6 +236,57 @@ test("projection, immutable nodes and exact zoom survive reopen without resummar
   expect(fixtureState.compressions()).toBe(calls);
   expect(await state.memory.zoom(0, 2)).toContain("1+1|");
   await expect(state.memory.zoom(1, 2)).rejects.toThrow("No line");
+});
+
+test("SQLite reopening preserves an unfinished batch and completes it on new input", async () => {
+  const f = await fixture();
+  const options = { nodeBytes: 64, viewBytes: 300, compress: async () => "summary" };
+  let state = await f.open(options);
+  await state.main.commit(async (tx) => {
+    for (let i = 0; i < 8; i++)
+      await tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "x".repeat(40), timestamp: i + 1 }],
+      });
+  }, context);
+  await state.memory.prepare();
+  await state.main.commit(async (tx) => {
+    const draft = await tx.doc(MemoryIndexDoc, state.main.id);
+    // A partial batch is below 300 bytes but still above its 150-byte target.
+    draft.parts = [
+      { start: 0, count: 4 },
+      ...Array.from({ length: 4 }, (_, i) => ({ start: i + 4, count: 1 })),
+    ];
+    draft.merging = true;
+  }, context);
+  await state.memory.close();
+  await state.harness.close(context);
+  state = await f.open(options);
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.merging).toBe(
+    true,
+  );
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "new", timestamp: 9 }],
+      }),
+    context,
+  );
+  await state.memory.prepare();
+  const index = (await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))!;
+  expect(index.merging).toBe(false);
+  const texts = await Promise.all(
+    index.parts.map((part) =>
+      state.harness.snapshot(MemoryNodesDoc, state.main.id, `${part.start}+${part.count}`, context),
+    ),
+  );
+  expect(texts.reduce((sum, node) => sum + utf8Bytes(node!.text), 0)).toBeLessThanOrEqual(150);
+  expect(await state.memory.zoom(0, 1)).toContain("x".repeat(40));
 });
 
 test("silent old and future turns keep IDs and originals but leave prepared memory", async () => {
