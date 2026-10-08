@@ -15,6 +15,16 @@ describe("chat-only transcript policy", () => {
     expect(isTranscriptDetailsBlock({ type: "text" })).toBe(false);
   });
 
+  it("empty assistant text is not chat, while attachments and actual replies survive", () => {
+    expect(chatOnlyBlocks("assistant", [{ type: "text", text: "" }])).toBeUndefined();
+    expect(chatOnlyBlocks("assistant", [{ type: "text", text: " \n\t" }])).toBeUndefined();
+    const image = { type: "image", url: "/image.png" };
+    expect(chatOnlyBlocks("assistant", [{ type: "text", text: "" }, image])).toEqual([image]);
+    expect(chatOnlyBlocks("assistant", [{ type: "text", text: " Answer " }])).toEqual([
+      { type: "text", text: " Answer " },
+    ]);
+  });
+
   it("keeps user chat and strips assistant transcript details", () => {
     const user = [{ type: "text", text: "Question" }];
     expect(chatOnlyBlocks("user", user)).toEqual(user);

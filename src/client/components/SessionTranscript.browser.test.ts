@@ -76,6 +76,27 @@ async function state(page: Page, value: string) {
 }
 
 for (const width of [390, 1100]) {
+  test(`empty cron response never creates a bubble or Copy action at ${width}px`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 800 } });
+    try {
+      await page.goto(url);
+      await state(page, "empty-cron");
+      await page.getByText("Google Docs Markdown", { exact: true }).waitFor();
+      const copy = page.getByRole("button", { name: "Copy reply as markdown", exact: true });
+      expect(await copy.count()).toBe(1);
+      expect(await page.locator(".message__segment--bubble").count()).toBe(1);
+      await page.getByRole("button", { name: "Show details", exact: true }).click();
+      await page.getByText("Heartbeat result", { exact: true }).waitFor();
+      await page.getByText("Research result", { exact: true }).waitFor();
+      expect(await copy.count()).toBe(1);
+      expect(await page.locator(".message__segment--bubble").count()).toBe(1);
+      await state(page, "always");
+      expect(await copy.count()).toBe(1);
+      expect(await page.locator(".message__segment--bubble").count()).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
   test(`orphan details toggle without a reply bubble at ${width}px`, async () => {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
     try {

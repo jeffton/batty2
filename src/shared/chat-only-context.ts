@@ -29,7 +29,9 @@ export function chatOnlyBlocks<T extends TranscriptContentBlockLike>(
   if (role === "user") return blocks;
 
   const visible = blocks.filter(
-    (block) => !isTranscriptDetailsBlock(block) || keepDetailsBlock?.(block) === true,
+    (block) =>
+      (block.type !== "text" || blockText(block).trim().length > 0) &&
+      (!isTranscriptDetailsBlock(block) || keepDetailsBlock?.(block) === true),
   );
   const text = visible.map(blockText).join("").trim();
   if (text === NO_REPLY_SENTINEL || visible.length === 0) return undefined;

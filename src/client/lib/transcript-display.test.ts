@@ -169,6 +169,42 @@ test("silent cron turns retain details, and a sentinel after a real reply keeps 
   });
 });
 
+test("empty final cron responses are not replies or toggle anchors", () => {
+  const notice: UiMessage = {
+    id: "cron-211153",
+    role: "custom",
+    timestamp: 3,
+    customType: "batty-runtime-notice:cron",
+    text: "Heartbeat result",
+  };
+  const empty = reply("211326", {
+    stopReason: "stop",
+    blocks: [{ type: "text", text: "" }],
+  });
+  const resultNotice = { ...notice, id: "subagent-result" };
+  const final = reply("211384", { blocks: [{ type: "text", text: "Google Docs Markdown" }] });
+  const finished = display([notice, empty, resultNotice, final]);
+  expect(finished).toHaveLength(1);
+  expect(finished[0]).toMatchObject({
+    entry: { message: { id: "211384" } },
+    detailsToggle: { sectionKey: "turn:cron-211153", expanded: false },
+  });
+  expect(display([notice, empty])).toEqual([
+    { kind: "details-toggle", sectionKey: "turn:cron-211153", expanded: false },
+  ]);
+  expect(display([empty])).toEqual([]);
+  // Preserve originals and the details preference; the renderer ignores blank text.
+  expect(display([notice, empty], { alwaysShowDetails: true })).toHaveLength(2);
+  const error = { ...empty, stopReason: "error" as const, errorMessage: "Useful error" };
+  expect(JSON.stringify(display([error]))).toContain("Useful error");
+  const attached = {
+    ...empty,
+    blocks: [{ type: "image" as const, url: "/image.png", mimeType: "image/png" }],
+  };
+  expect(display([attached])).toHaveLength(1);
+  expect(empty.blocks).toEqual([{ type: "text", text: "" }]);
+});
+
 test("orphan tool results and runtime artifacts collapse without losing their payloads", () => {
   const orphan: UiMessage = {
     id: "tool-result",

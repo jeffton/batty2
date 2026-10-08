@@ -85,6 +85,25 @@
             ],
             isStreaming: false,
           };
+        if (detail === "empty-cron")
+          session.value = {
+            ...session.value,
+            messages: [
+              {
+                ...notice,
+                id: "cron-211153",
+                data: { runtimeNotice: { text: "Heartbeat", markdown: "Heartbeat result" } },
+              },
+              { ...final, id: "211326", blocks: [{ type: "text", text: "" }] },
+              {
+                ...notice,
+                id: "subagent-result",
+                data: { runtimeNotice: { text: "Research", markdown: "Research result" } },
+              },
+              { ...final, id: "211384", blocks: [{ type: "text", text: "Google Docs Markdown" }] },
+            ],
+            isStreaming: false,
+          };
         if (detail === "partial") {
           session.value = {
             ...session.value,

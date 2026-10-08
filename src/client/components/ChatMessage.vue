@@ -62,7 +62,10 @@ function markdownForBlock(block: UiContentBlock): string | undefined {
 }
 
 function showAssistantBlock(block: UiContentBlock): boolean {
-  return !isAttachmentOutputToolCall(block, props.toolStatesByCallId);
+  return (
+    (block.type !== "text" || block.text.trim().length > 0) &&
+    !isAttachmentOutputToolCall(block, props.toolStatesByCallId)
+  );
 }
 
 function isSentFileDescriptor(candidate: unknown): candidate is SentFileDescriptor {
