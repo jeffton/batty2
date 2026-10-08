@@ -26,15 +26,45 @@ interface CacheMetadata {
   savedAt: number;
 }
 let database: Promise<IDBDatabase> | undefined;
+const owners = new WeakMap<IDBDatabase, Promise<IDBDatabase>>();
 let queue = Promise.resolve();
 let generation = 0;
 const serialized = new WeakMap<UiMessage, MessageRecord>();
 
 function request<T>(request: IDBRequest<T>): Promise<T> {
+  // Native DOMExceptions on iOS have no JS stack. Capture the issuing site,
+  // retaining the native name/message for the UI and allowlisted telemetry.
+  const failure = new Error();
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      failure.name = request.error!.name;
+      failure.message = request.error!.message;
+      reject(failure);
+    };
   });
+}
+
+async function readRecords(db: IDBDatabase) {
+  const transaction = db.transaction(["metadata", "messages"], "readonly");
+  const done = transactionDone(transaction, "read");
+  const results = await Promise.allSettled([
+    request(transaction.objectStore("metadata").get("current")) as Promise<
+      CacheMetadata | undefined
+    >,
+    request(transaction.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
+    done,
+  ]);
+  // A request error arrives before the transaction's terminal abort event.
+  // Join that event before releasing the save lock or reusing the connection.
+  const failures = results.filter((result) => result.status === "rejected");
+  // Requests cancelled by the abort are secondary to the native failure that caused it.
+  const failure = failures.find((result) => result.reason?.name !== "AbortError") ?? failures[0];
+  if (failure) throw failure.reason;
+  return [
+    (results[0] as PromiseFulfilledResult<CacheMetadata | undefined>).value,
+    (results[1] as PromiseFulfilledResult<MessageRecord[]>).value,
+  ] as const;
 }
 function transactionDone(
   transaction: IDBTransaction,
@@ -44,8 +74,12 @@ function transactionDone(
     transaction.oncomplete = () => resolve();
     // Request errors bubble before abort. Settle on the terminal event so callers
     // cannot start the next cache operation while this transaction is still alive.
-    transaction.onabort = () =>
+    transaction.onabort = () => {
+      const db = transaction.db;
+      if (database === owners.get(db)) database = undefined;
+      db.close();
       reject(transaction.error ?? new Error(`Cache transaction aborted: ${phase}`));
+    };
   });
 }
 window.addEventListener("pagehide", () => {
@@ -68,6 +102,7 @@ function open(): Promise<IDBDatabase> {
     };
     operation.onsuccess = () => {
       const db = operation.result;
+      owners.set(db, pending);
       db.onclose = () => {
         if (database === pending) database = undefined;
       };
@@ -127,16 +162,7 @@ export function authorizePreviewCache(bootstrap: BootstrapPayload): void {
 
 export async function readMainCache(): Promise<CacheMetadata | undefined> {
   const db = await open();
-  const transaction = db.transaction(["metadata", "messages"], "readonly");
-  const done = transactionDone(transaction, "read");
-  const [metadata, records] = await Promise.all([
-    request(transaction.objectStore("metadata").get("current")) as Promise<
-      CacheMetadata | undefined
-    >,
-    request(transaction.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
-    done,
-  ]);
-  await done;
+  const [metadata, records] = await readRecords(db);
   if (!metadata) return undefined;
   if (metadata.bootstrap.cacheScope === localStorage.getItem(REVOKED_CACHE_SCOPE_KEY)) {
     await clearMainCache();
@@ -179,14 +205,7 @@ export function saveMainCache(bootstrap: BootstrapPayload, session: SessionState
     navigator.locks.request("batty-main-reading-cache", async () => {
       if (admitted !== generation || !isCacheAuthorized()) return;
       const db = await open();
-      const read = db.transaction(["metadata", "messages"], "readonly");
-      const readDone = transactionDone(read, "read");
-      const [oldMetadata, oldRows] = await Promise.all([
-        request(read.objectStore("metadata").get("current")) as Promise<CacheMetadata | undefined>,
-        request(read.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
-        readDone,
-      ]);
-      await readDone;
+      const [oldMetadata, oldRows] = await readRecords(db);
       if (admitted !== generation || !isCacheAuthorized()) return;
       const sameScope =
         oldMetadata?.bootstrap.cacheScope === bootstrap.cacheScope &&

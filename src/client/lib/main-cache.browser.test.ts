@@ -357,7 +357,7 @@ test.each(["Chromium", "WebKit"])(
       IDBFactory.prototype.open = nativeOpen;
       return { opens, afterResume, retained, afterOverlappingSuspension, abort, unhandled };
     });
-    expect(result.opens).toBe(4);
+    expect(result.opens).toBe(5);
     expect(result.afterOverlappingSuspension.session.revision).toBe(4);
     expect(result.afterResume.session.revision).toBe(2);
     expect(result.retained.session.revision).toBe(3);
@@ -374,5 +374,79 @@ test.each(["Chromium", "WebKit"])(
       session: { revision: 4 },
     });
     await context.close();
+  },
+);
+
+test.each(["Chromium", "WebKit"])(
+  "%s failed save joins the read abort and releases the poisoned connection",
+  async (engine) => {
+    const page = await fixture(engine === "WebKit" ? safari : browser);
+    const result = await evaluate(page, async () => {
+      const c = (window as any).cache;
+      const bootstrap = { cacheScope: "failure", cacheExpiresAt: Date.now() + 60_000 };
+      const session = {
+        id: "1",
+        sessionId: "1",
+        streamId: "a",
+        revision: 1,
+        messages: [],
+        activeTools: [],
+      };
+      await c.saveMainCache(bootstrap, session);
+      let terminal = false;
+      let premature = false;
+      let opens = 0;
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (...args) {
+        opens += 1;
+        return open.apply(this, args);
+      };
+      const nativeTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args) {
+        const transaction = nativeTransaction.apply(this, args);
+        transaction.addEventListener("abort", () => {
+          terminal = true;
+        });
+        return transaction;
+      };
+      const getAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (...args) {
+        IDBObjectStore.prototype.getAll = getAll;
+        const operation = getAll.apply(this, args);
+        const transaction = this.transaction;
+        // Model the native request failing before its transaction's abort task.
+        queueMicrotask(() => {
+          Object.defineProperty(operation, "error", {
+            value: new DOMException(
+              "Attempt to get a record from database without an in-progress transaction",
+              "UnknownError",
+            ),
+          });
+          operation.onerror!(new Event("error"));
+          transaction.abort();
+        });
+        return operation;
+      };
+      const failed = c
+        .saveMainCache(bootstrap, { ...session, revision: 2 })
+        .catch((error: Error) => {
+          premature = !terminal;
+          return { name: error.name, message: error.message, stack: error.stack };
+        });
+      // Already queued saves must wait for the terminal event and use a new connection.
+      const next = c.saveMainCache(bootstrap, { ...session, revision: 3 });
+      const error = await failed;
+      await next;
+      const restored = await c.readMainCache();
+      IDBFactory.prototype.open = open;
+      IDBDatabase.prototype.transaction = nativeTransaction;
+      return { premature, terminal, opens, error, revision: restored.session.revision };
+    });
+    expect(result.premature).toBe(false);
+    expect(result.opens).toBe(1);
+    expect(result.revision).toBe(3);
+    expect(result.error.name).toBe("UnknownError");
+    expect(result.error.stack).toContain("main-cache.ts");
+    await page.close();
   },
 );

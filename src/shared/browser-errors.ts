@@ -50,6 +50,8 @@ export function safeErrorName(value: string): string {
   return errorNames.includes(value) ? value : "Unknown";
 }
 const diagnosticMessages = new Set([
+  "Attempt to get a record from database without an in-progress transaction",
+  "Attempt to get a record from the database without an in-progress transaction",
   "Cache transaction aborted",
   "Cache transaction aborted: read",
   "Cache transaction aborted: write",
