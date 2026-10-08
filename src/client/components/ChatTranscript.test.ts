@@ -68,6 +68,34 @@ for (const location of ["history", "tail"] as const) {
   });
 }
 
+for (const location of ["history", "tail"] as const) {
+  test(`${location} renders orphan details as only the shared toggle`, async () => {
+    const entries = [
+      { kind: "details-toggle" as const, sectionKey: "turn:orphan", expanded: false },
+    ];
+    const wrapper = mount(ChatTranscript, {
+      props: {
+        historyEntries: location === "history" ? entries : [],
+        tailEntries: location === "tail" ? entries : [],
+        keptHistoryIndexes: [],
+        isStreaming: false,
+        isPinnedToBottom: true,
+      },
+    });
+    try {
+      expect(wrapper.findAll("article")).toHaveLength(0);
+      expect(wrapper.findAll("button")).toHaveLength(1);
+      expect(wrapper.text()).toBe("");
+      const toggle = wrapper.get('button[aria-label="Show details"]');
+      expect(toggle.attributes("aria-expanded")).toBe("false");
+      await toggle.trigger("click");
+      expect(wrapper.emitted("toggleDetails")).toEqual([["turn:orphan"]]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+}
+
 test("artifact-only and error-only replies each render exactly one action stack", () => {
   for (const extra of [
     { errorMessage: "Failed", stopReason: "error" as const },

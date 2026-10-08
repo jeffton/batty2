@@ -33,7 +33,7 @@ const transcriptBottom = ref<HTMLElement | null>(null);
 function entryKey(entry: TranscriptDisplayEntry): string {
   return entry.kind === "message"
     ? `message:${entry.entry.message.id}`
-    : `details-toggle:${entry.sectionKey}:${entry.expanded ? "expanded" : "collapsed"}`;
+    : `details-toggle:${entry.sectionKey}`;
 }
 
 function rootElement(): HTMLElement | null {
@@ -91,6 +91,12 @@ defineExpose({
                 />
               </template>
             </ChatMessage>
+            <div v-else class="transcript__details-actions">
+              <TranscriptDetailsButton
+                :expanded="displayEntry.expanded"
+                @toggle="emit('toggleDetails', displayEntry.sectionKey)"
+              />
+            </div>
           </div>
         </template>
       </Virtualizer>
@@ -116,6 +122,12 @@ defineExpose({
               />
             </template>
           </ChatMessage>
+          <div v-else class="transcript__details-actions">
+            <TranscriptDetailsButton
+              :expanded="displayEntry.expanded"
+              @toggle="emit('toggleDetails', displayEntry.sectionKey)"
+            />
+          </div>
         </div>
         <div ref="transcriptBottom" class="transcript__bottom" aria-hidden="true" />
       </div>
@@ -159,6 +171,11 @@ defineExpose({
 .transcript__item {
   min-width: 0;
   padding-bottom: 0.8rem;
+}
+
+.transcript__details-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .transcript__top,

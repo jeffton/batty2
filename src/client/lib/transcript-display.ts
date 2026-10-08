@@ -1,3 +1,4 @@
+import { NO_REPLY_SENTINEL } from "@/shared/agent-notification";
 import { easyModeMessage } from "@/client/lib/easy-mode";
 import { isAttachmentOutputToolCall } from "@/client/lib/transcript";
 import type { ToolDisplayState, TranscriptMessageView } from "@/client/lib/transcript";
@@ -39,8 +40,7 @@ function transcriptSections(
   let hasReply = false;
   entries.forEach((entry, index) => {
     // Runtime inputs can arrive between a tool call and its final reply. They
-    // continue that work, rather than stranding it in a reply-less section that
-    // must stay expanded. After a reply, a notice starts independent work.
+    // continue that work. After a reply, a notice starts independent work.
     if (
       index === 0 ||
       entry.message.role === "user" ||
@@ -152,6 +152,26 @@ export function buildTranscriptDisplayEntries(
     isStreaming?: boolean;
   } = {},
 ): TranscriptDisplayResult {
+  // The sentinel is a transport instruction, not a reply. Keep its work and
+  // artifacts in the view without rendering a sentinel bubble or changing history.
+  entries = entries.flatMap((entry) => {
+    const message = entry.message;
+    if (
+      message.role !== "assistant" ||
+      message.blocks
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("")
+        .trim() !== NO_REPLY_SENTINEL
+    ) {
+      return [entry];
+    }
+    const next = { ...message, blocks: message.blocks.filter((block) => block.type !== "text") };
+    return next.blocks.length > 0 || easyModeMessage(next, toolStatesByCallId)
+      ? [{ ...entry, message: next }]
+      : [];
+  });
+
   if (options.alwaysShowDetails) {
     return {
       entries: entries.map((entry) => ({ kind: "message", entry, showTimestamp: false })),
@@ -198,10 +218,7 @@ export function buildTranscriptDisplayEntries(
         : collapsedMessage(entry, toolStatesByCallId),
     );
     const lastReplyIndex = collapsedEntries.findLastIndex(hasAssistantReply);
-    // Without a reply there is nowhere to put a control. Keep notices, failed
-    // tools and interrupted work accessible rather than silently dropping them.
-    const isExpanded =
-      isRunning || lastReplyIndex < 0 || section.key === options.openDetailsSectionKey;
+    const isExpanded = isRunning || section.key === options.openDetailsSectionKey;
     const items = sectionEntries.map((entry, index) => {
       const collapsed = collapsedEntries[index];
       return {
@@ -225,6 +242,9 @@ export function buildTranscriptDisplayEntries(
         });
       }
     });
+    if (canToggle && lastReplyIndex < 0) {
+      displayEntries.push({ kind: "details-toggle", ...detailsToggle(section, isExpanded) });
+    }
   }
 
   return {

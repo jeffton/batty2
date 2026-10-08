@@ -76,6 +76,39 @@ async function state(page: Page, value: string) {
 }
 
 for (const width of [390, 1100]) {
+  test(`orphan details toggle without a reply bubble at ${width}px`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 800 } });
+    try {
+      await page.goto(url);
+      await state(page, "orphan");
+      const toggle = page.getByRole("button", { name: "Show details", exact: true });
+      await toggle.waitFor();
+      expect(await page.locator(".message").count()).toBe(0);
+      expect(await page.locator(".transcript button").count()).toBe(1);
+      expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(await toggle.boundingBox()).toMatchObject({ width: 44, height: 44 });
+      const transcript = (await page.locator(".transcript").boundingBox())!;
+      const button = (await toggle.boundingBox())!;
+      expect(
+        Math.abs(transcript.x + transcript.width - 12.8 - button.x - button.width),
+      ).toBeLessThan(1);
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      await page.getByText("Full cron result", { exact: true }).waitFor();
+      await page.getByText("Cron artifact", { exact: true }).first().waitFor();
+      expect(await page.getByText("NO_REPLY", { exact: true }).count()).toBe(0);
+      expect(await page.locator(".message--assistant").count()).toBe(0);
+      const collapse = page.getByRole("button", { name: "Collapse details", exact: true });
+      expect(await collapse.getAttribute("aria-expanded")).toBe("true");
+      await page.screenshot({ path: `/tmp/batty2-orphan-${width}-expanded.png` });
+      expect(await collapse.evaluate((element) => element === document.activeElement)).toBe(true);
+      await page.keyboard.press("Space");
+      await page.getByText("Full cron result", { exact: true }).waitFor({ state: "hidden" });
+      await page.screenshot({ path: `/tmp/batty2-orphan-${width}-collapsed.png` });
+    } finally {
+      await page.close();
+    }
+  });
   test(`interrupted stream survives offline cache and reconnect delta at ${width}px`, async () => {
     const context = await browser.newContext({ viewport: { width, height: 800 } });
     const page = await context.newPage();

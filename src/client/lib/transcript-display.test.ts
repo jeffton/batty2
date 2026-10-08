@@ -80,13 +80,25 @@ test("cron/runtime sections run automatically and reply-less notices or aborts r
   ).toBe(true);
   const finished = display(messages);
   expect(finished.at(-1)).toMatchObject({ detailsToggle: { sectionKey: "turn:cron" } });
-  expect(display([notice])).toHaveLength(1);
+  expect(display([notice])).toEqual([
+    { kind: "details-toggle", sectionKey: "turn:cron", expanded: false },
+  ]);
+  expect(JSON.stringify(display([notice], { openDetailsSectionKey: "turn:cron" }))).toContain(
+    "Cron notice",
+  );
   const aborted = reply("aborted", {
     turnPhase: "intermediate",
     stopReason: "aborted",
     blocks: [{ type: "thinking", thinking: "Interrupted work" }],
   });
-  expect(JSON.stringify(display([user, aborted]))).toContain("Interrupted work");
+  expect(JSON.stringify(display([user, aborted]))).not.toContain("Interrupted work");
+  expect(display([user, aborted]).at(-1)).toMatchObject({
+    kind: "details-toggle",
+    expanded: false,
+  });
+  expect(JSON.stringify(display([user, aborted], { openDetailsSectionKey: "turn:u" }))).toContain(
+    "Interrupted work",
+  );
 });
 
 test("a resumed durable run keeps its interrupted generation in details without hiding unrelated replies", () => {
@@ -138,12 +150,49 @@ test("silent cron turns retain details, and a sentinel after a real reply keeps 
       { type: "text", text: "NO_REPLY" },
     ],
   });
-  expect(JSON.stringify(display([notice, silent]))).toContain("Silent work");
+  expect(display([notice, silent])).toEqual([
+    { kind: "details-toggle", sectionKey: "turn:cron", expanded: false },
+  ]);
+  const expanded = display([notice, silent], { openDetailsSectionKey: "turn:cron" });
+  expect(JSON.stringify(expanded)).toContain("Silent work");
+  expect(JSON.stringify(expanded)).not.toContain("NO_REPLY");
+  expect(JSON.stringify(display([notice, silent], { alwaysShowDetails: true }))).not.toContain(
+    "NO_REPLY",
+  );
+  expect(JSON.stringify(display([notice, silent], { isStreaming: true }))).toContain("Silent work");
+  expect(silent.blocks).toContainEqual({ type: "text", text: "NO_REPLY" });
   const result = display([notice, reply("real"), silent]);
   expect(result).toHaveLength(1);
   expect(result[0]).toMatchObject({
     entry: { message: { id: "real" } },
     detailsToggle: { sectionKey: "turn:cron" },
+  });
+});
+
+test("orphan tool results and runtime artifacts collapse without losing their payloads", () => {
+  const orphan: UiMessage = {
+    id: "tool-result",
+    role: "toolResult",
+    timestamp: 1,
+    toolCallId: "call",
+    toolName: "bash",
+    isError: false,
+    blocks: [{ type: "text", text: "Tool output" }],
+  };
+  expect(display([orphan])).toEqual([
+    { kind: "details-toggle", sectionKey: "turn:tool-result", expanded: false },
+  ]);
+  expect(display([orphan], { openDetailsSectionKey: "turn:tool-result" })[0]).toMatchObject({
+    kind: "message",
+    entry: { message: orphan },
+  });
+  expect(display([orphan], { isStreaming: true })[0]).toMatchObject({
+    kind: "message",
+    entry: { message: orphan },
+  });
+  expect(display([orphan], { alwaysShowDetails: true })[0]).toMatchObject({
+    kind: "message",
+    entry: { message: orphan },
   });
 });
 

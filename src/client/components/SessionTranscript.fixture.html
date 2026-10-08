@@ -2,6 +2,11 @@
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      #app > .transcript-shell {
+        width: 100%;
+      }
+    </style>
   </head>
   <body>
     <div id="app" style="height: 700px; display: flex"></div>
@@ -56,6 +61,30 @@
       });
       const always = ref(false);
       document.addEventListener("fixture-state", async ({ detail }) => {
+        if (detail === "orphan")
+          session.value = {
+            ...session.value,
+            messages: [
+              {
+                ...notice,
+                data: {
+                  runtimeNotice: { text: "Cron completed", markdown: "Full cron result" },
+                  runtimeResultArtifacts: {
+                    sites: [
+                      {
+                        id: "artifact",
+                        name: "Cron artifact",
+                        url: "https://example.com",
+                        public: true,
+                      },
+                    ],
+                  },
+                },
+              },
+              { ...final, id: "silent", blocks: [{ type: "text", text: "NO_REPLY" }] },
+            ],
+            isStreaming: false,
+          };
         if (detail === "partial") {
           session.value = {
             ...session.value,
