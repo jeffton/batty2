@@ -352,6 +352,11 @@ test.each(["Chromium", "WebKit"])(
         IDBObjectStore.prototype.getAll = getAll;
         return operation;
       };
+      const cancellation = await c
+        .saveMainCache(bootstrap, { ...session, revision: 4 })
+        .catch((error: Error) => error instanceof c.CacheSuspendedError);
+      if (!cancellation) throw new Error("Expected owned suspension cancellation");
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
       await c.saveMainCache(bootstrap, { ...session, revision: 4 });
       const afterOverlappingSuspension = await c.readMainCache();
       IDBFactory.prototype.open = nativeOpen;
@@ -447,6 +452,198 @@ test.each(["Chromium", "WebKit"])(
     expect(result.revision).toBe(3);
     expect(result.error.name).toBe("UnknownError");
     expect(result.error.stack).toContain("main-cache.ts");
+    await page.close();
+  },
+);
+
+test.each(["Chromium", "WebKit"])(
+  "%s cancels owned suspension work, preserves prior cache and resumes fresh writes",
+  async (engine) => {
+    const page = await fixture(engine === "WebKit" ? safari : browser);
+    const result = await evaluate(page, async () => {
+      const c = (window as any).cache;
+      const bootstrap = { cacheScope: "suspension", cacheExpiresAt: Date.now() + 60_000 };
+      const session = {
+        id: "1",
+        sessionId: "1",
+        streamId: "a",
+        revision: 1,
+        messages: [
+          {
+            id: "1",
+            timestamp: Date.now(),
+            role: "user",
+            blocks: [{ type: "text", text: "offline original" }],
+          },
+        ],
+      };
+      await c.saveMainCache(bootstrap, session);
+      let hidden = false;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => (hidden ? "hidden" : "visible"),
+      });
+      const hide = () => {
+        hidden = true;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      const resume = () => {
+        hidden = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      const commit = IDBTransaction.prototype.commit;
+      IDBTransaction.prototype.commit = function () {
+        IDBTransaction.prototype.commit = commit;
+        // Keep this transaction uncommitted until its request success task.
+      };
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        const operation = put.apply(this, args);
+        if (this.name === "metadata") {
+          IDBObjectStore.prototype.put = put;
+          // Control event timing with a real native write; not phone suspension.
+          operation.addEventListener("success", hide, { once: true });
+        }
+        return operation;
+      };
+      const writeError = await c
+        .saveMainCache(bootstrap, { ...session, revision: 2 })
+        .catch((error: Error) => ({
+          owned: error instanceof c.CacheSuspendedError,
+          message: error.message,
+        }));
+      const hiddenRead = await c
+        .readMainCache()
+        .catch((error: Error) => error instanceof c.CacheSuspendedError);
+      resume();
+      const previous = await c.readMainCache();
+      const getAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (...args) {
+        IDBObjectStore.prototype.getAll = getAll;
+        const operation = getAll.apply(this, args);
+        operation.addEventListener("success", hide, { once: true });
+        return operation;
+      };
+      // Resume when the cancelled read settles. WebKit may defer lock grants
+      // while hidden; queued saves must not be mistaken for deadlocked writes.
+      const overlapping = await Promise.allSettled([
+        c.readMainCache().catch((error: Error) => {
+          resume();
+          throw error;
+        }),
+        c.saveMainCache(bootstrap, { ...session, revision: 3 }),
+        c.saveMainCache(bootstrap, { ...session, revision: 4 }),
+      ]);
+      await c.saveMainCache(bootstrap, {
+        ...session,
+        revision: 5,
+        messages: [
+          ...session.messages,
+          { ...session.messages[0], id: "2", blocks: [{ type: "text", text: "fresh foreground" }] },
+        ],
+      });
+      const fresh = await c.readMainCache();
+      return {
+        writeError,
+        hiddenRead,
+        previous: previous.session.revision,
+        cancellations: overlapping.map(
+          (r) => r.status === "rejected" && r.reason instanceof c.CacheSuspendedError,
+        ),
+        freshRevision: fresh.session.revision,
+        texts: fresh.session.messages.map((m: any) => m.blocks[0].text),
+      };
+    });
+    expect(result.writeError.owned).toBe(true);
+    expect(result.hiddenRead).toBe(true);
+    expect(result.previous).toBe(1);
+    expect(result.cancellations[0]).toBe(true);
+    expect(result.freshRevision).toBe(5);
+    expect(result.texts).toEqual(["offline original", "fresh foreground"]);
+    await page.close();
+  },
+);
+
+test.each(["Chromium", "WebKit"])(
+  "%s waits for every overlapping abort and preserves a write already committed on hide",
+  async (engine) => {
+    const page = await fixture(engine === "WebKit" ? safari : browser);
+    const result = await evaluate(page, async () => {
+      const c = (window as any).cache;
+      const bootstrap = { cacheScope: "terminal", cacheExpiresAt: Date.now() + 60_000 };
+      const session = {
+        id: "1",
+        sessionId: "1",
+        streamId: "a",
+        revision: 1,
+        messages: [{ id: "1", timestamp: Date.now(), role: "user", blocks: [] }],
+      };
+      await c.saveMainCache(bootstrap, session);
+      let hidden = false;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => (hidden ? "hidden" : "visible"),
+      });
+      const hide = () => {
+        hidden = true;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      const resume = () => {
+        hidden = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      const pending = new Map<IDBDatabase, number>();
+      let prematureClose = false;
+      let mostPending = 0;
+      const nativeTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args: any[]) {
+        const transaction = nativeTransaction.apply(this, args as any);
+        pending.set(this, (pending.get(this) ?? 0) + 1);
+        mostPending = Math.max(mostPending, pending.get(this)!);
+        const settled = () => pending.set(this, pending.get(this)! - 1);
+        transaction.addEventListener("complete", settled);
+        transaction.addEventListener("abort", settled);
+        return transaction;
+      };
+      const close = IDBDatabase.prototype.close;
+      IDBDatabase.prototype.close = function () {
+        if ((pending.get(this) ?? 0) > 0) prematureClose = true;
+        close.call(this);
+      };
+      const getAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (...args) {
+        IDBObjectStore.prototype.getAll = getAll;
+        const operation = getAll.apply(this, args);
+        operation.addEventListener("success", hide, { once: true });
+        return operation;
+      };
+      const reads = await Promise.allSettled([c.readMainCache(), c.readMainCache()]);
+      resume();
+      const commit = IDBTransaction.prototype.commit;
+      IDBTransaction.prototype.commit = function () {
+        IDBTransaction.prototype.commit = commit;
+        commit.call(this);
+        // abort() must throw InvalidStateError here, not cancel a committed write.
+        hide();
+      };
+      await c.saveMainCache(bootstrap, { ...session, revision: 2 });
+      resume();
+      const cached = await c.readMainCache();
+      IDBDatabase.prototype.transaction = nativeTransaction;
+      IDBDatabase.prototype.close = close;
+      return {
+        prematureClose,
+        mostPending,
+        revision: cached.session.revision,
+        cancelled: reads.map(
+          (r) => r.status === "rejected" && r.reason instanceof c.CacheSuspendedError,
+        ),
+      };
+    });
+    expect(result.prematureClose).toBe(false);
+    expect(result.mostPending).toBe(2);
+    expect(result.cancelled).toEqual([true, true]);
+    expect(result.revision).toBe(2);
     await page.close();
   },
 );

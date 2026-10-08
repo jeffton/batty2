@@ -10,6 +10,7 @@ const offline = () => {
 const online = () => {
   void store.checkForUpdates();
   void store.recoverConnection();
+  void store.persistMainCache();
 };
 const visible = () => {
   if (document.visibilityState !== "hidden") online();

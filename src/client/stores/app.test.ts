@@ -11,6 +11,7 @@ import ChatHeader from "@/client/components/ChatHeader.vue";
 import ChatSessionPane from "@/client/components/ChatSessionPane.vue";
 import { useAppStore } from "./app";
 vi.mock("@/client/lib/main-cache", () => ({
+  CacheSuspendedError: class CacheSuspendedError extends Error {},
   CACHE_DAY_MS: 86_400_000,
   CACHE_EPOCH_KEY: "batty:main-cache-epoch",
   REVOKED_CACHE_SCOPE_KEY: "batty:revoked-cache-scope",
@@ -128,6 +129,30 @@ describe("caught cache diagnostics", () => {
     await store.persistMainCache();
     expect(report).toHaveBeenCalledWith(error, "cache-write");
     expect(store.lastError).toContain("Cache transaction aborted: write");
+    report.mockRestore();
+  });
+  it("keeps diagnostics for owned suspension, clears recovered cache errors only", async () => {
+    const report = vi.spyOn(browserErrors, "reportBrowserError").mockImplementation(() => {});
+    const store = useAppStore();
+    await store.bootstrap();
+    const failure = new Error("Cache transaction aborted: write");
+    vi.mocked(cache.saveMainCache).mockRejectedValueOnce(failure);
+    await store.persistMainCache();
+    const cancellation = new cache.CacheSuspendedError();
+    vi.mocked(cache.saveMainCache).mockRejectedValueOnce(cancellation);
+    await store.persistMainCache();
+    expect(store.lastError).toContain(failure.message);
+    expect(report).toHaveBeenCalledWith(cancellation, "cache-write");
+    await store.persistMainCache();
+    expect(store.lastError).toBeUndefined();
+    vi.mocked(cache.saveMainCache).mockRejectedValueOnce(failure);
+    await store.persistMainCache();
+    store.lastError = "Unrelated server failure";
+    await store.persistMainCache();
+    expect(store.lastError).toBe("Unrelated server failure");
+    vi.mocked(cache.saveMainCache).mockRejectedValueOnce(cancellation);
+    await store.persistMainCache();
+    expect(store.lastError).toBe("Unrelated server failure");
     report.mockRestore();
   });
   it("reports read aborts after authenticated bootstrap, without an extra bootstrap request", async () => {

@@ -30,6 +30,18 @@ const owners = new WeakMap<IDBDatabase, Promise<IDBDatabase>>();
 let queue = Promise.resolve();
 let generation = 0;
 const serialized = new WeakMap<UiMessage, MessageRecord>();
+const activeTransactions = new Set<IDBTransaction>();
+const lifecycleAborts = new WeakSet<IDBTransaction>();
+
+export class CacheSuspendedError extends Error {
+  constructor() {
+    super("Cache operation cancelled: page suspended");
+    this.name = "AbortError";
+  }
+}
+function requireForeground(): void {
+  if (document.visibilityState === "hidden") throw new CacheSuspendedError();
+}
 
 function request<T>(request: IDBRequest<T>): Promise<T> {
   // Native DOMExceptions on iOS have no JS stack. Capture the issuing site,
@@ -46,6 +58,7 @@ function request<T>(request: IDBRequest<T>): Promise<T> {
 }
 
 async function readRecords(db: IDBDatabase) {
+  requireForeground();
   const transaction = db.transaction(["metadata", "messages"], "readonly");
   const done = transactionDone(transaction, "read");
   const results = await Promise.allSettled([
@@ -55,11 +68,12 @@ async function readRecords(db: IDBDatabase) {
     request(transaction.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
     done,
   ]);
-  // A request error arrives before the transaction's terminal abort event.
-  // Join that event before releasing the save lock or reusing the connection.
+  // Join the terminal abort before releasing the save lock or reusing the connection.
   const failures = results.filter((result) => result.status === "rejected");
-  // Requests cancelled by the abort are secondary to the native failure that caused it.
-  const failure = failures.find((result) => result.reason?.name !== "AbortError") ?? failures[0];
+  const failure =
+    failures.find((result) => result.reason?.name !== "AbortError") ??
+    failures.find((result) => result.reason instanceof CacheSuspendedError) ??
+    failures[0];
   if (failure) throw failure.reason;
   return [
     (results[0] as PromiseFulfilledResult<CacheMetadata | undefined>).value,
@@ -70,34 +84,67 @@ function transactionDone(
   transaction: IDBTransaction,
   phase: "read" | "write" | "clear",
 ): Promise<void> {
+  if (phase !== "clear") activeTransactions.add(transaction);
   return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    // Request errors bubble before abort. Settle on the terminal event so callers
-    // cannot start the next cache operation while this transaction is still alive.
+    transaction.oncomplete = () => {
+      activeTransactions.delete(transaction);
+      closeReleasedConnection(transaction.db);
+      resolve();
+    };
+    // Settle only on the terminal event; the save lock must outlive the transaction.
     transaction.onabort = () => {
+      activeTransactions.delete(transaction);
       const db = transaction.db;
       if (database === owners.get(db)) database = undefined;
-      db.close();
-      reject(transaction.error ?? new Error(`Cache transaction aborted: ${phase}`));
+      closeReleasedConnection(db);
+      // Only our own successful abort is a lifecycle cancellation. Native failures,
+      // including UnknownError and quota errors during backgrounding, stay errors.
+      const cancelled =
+        lifecycleAborts.has(transaction) &&
+        (!transaction.error || transaction.error.name === "AbortError");
+      reject(
+        cancelled
+          ? new CacheSuspendedError()
+          : (transaction.error ?? new Error(`Cache transaction aborted: ${phase}`)),
+      );
     };
   });
+}
+function suspendCache(): void {
+  for (const transaction of activeTransactions) {
+    try {
+      transaction.abort();
+      lifecycleAborts.add(transaction);
+    } catch (error) {
+      // commit() or a terminal event can already have made abort unavailable.
+      if (!(error instanceof DOMException) || error.name !== "InvalidStateError") throw error;
+    }
+  }
+  releaseConnection();
+}
+function closeReleasedConnection(db: IDBDatabase): void {
+  if (
+    database !== owners.get(db) &&
+    ![...activeTransactions].some((transaction) => transaction.db === db)
+  )
+    db.close();
 }
 function releaseConnection(): void {
   const pending = database;
   database = undefined;
-  // close() lets already-issued transactions complete but releases the connection
-  // before suspension. A restored page opens a new connection.
-  void pending?.then(
-    (db) => db.close(),
-    () => {},
-  );
+  // Revoke ownership immediately; close after terminal transaction events.
+  // Native WebKit can delay abort delivery if close races an explicit abort.
+  void pending?.then(closeReleasedConnection, () => {});
 }
-window.addEventListener("pagehide", releaseConnection);
+window.addEventListener("pagehide", suspendCache);
 // Switching iOS apps can suspend the storage process without pagehide. Drop the
 // connection on both transitions: foreground is also a boundary when WebKit
-// delivered no background event before suspension. In-flight requests still
-// settle normally, and their errors remain visible to callers.
-document.addEventListener("visibilitychange", releaseConnection);
+// delivered no background event before suspension. Explicitly cancel unfinished
+// work on backgrounding instead of leaving it to a suspended native connection.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") suspendCache();
+  else releaseConnection();
+});
 async function open(): Promise<IDBDatabase> {
   for (;;) {
     const pending = openConnection();
@@ -176,6 +223,7 @@ export function authorizePreviewCache(bootstrap: BootstrapPayload): void {
 }
 
 export async function readMainCache(): Promise<CacheMetadata | undefined> {
+  requireForeground();
   const db = await open();
   const [metadata, records] = await readRecords(db);
   if (!metadata) return undefined;
@@ -219,6 +267,7 @@ export function saveMainCache(bootstrap: BootstrapPayload, session: SessionState
   const operation = queue.then(() =>
     navigator.locks.request("batty-main-reading-cache", async () => {
       if (admitted !== generation || !isCacheAuthorized()) return;
+      requireForeground();
       const db = await open();
       const [oldMetadata, oldRows] = await readRecords(db);
       if (admitted !== generation || !isCacheAuthorized()) return;
@@ -264,6 +313,7 @@ export function saveMainCache(bootstrap: BootstrapPayload, session: SessionState
       // pagehide can close the read connection while its transaction completes.
       const writeDb = await open();
       if (admitted !== generation || !isCacheAuthorized()) return;
+      requireForeground();
       const transaction = writeDb.transaction(["metadata", "messages"], "readwrite");
       const done = transactionDone(transaction, "write");
       const messages = transaction.objectStore("messages");

@@ -23,8 +23,10 @@ import {
   REVOKED_CACHE_SCOPE_KEY,
   registerMainCacheBootstrap,
   authorizePreviewCache,
+  CacheSuspendedError,
 } from "@/client/lib/main-cache";
 let cachedBootstrap: BootstrapPayload | undefined;
+let cacheError: string | undefined;
 let cacheTimer: ReturnType<typeof setTimeout> | undefined;
 let cacheSubscribed = false;
 let connection: ReturnType<typeof createSessionConnection> | undefined;
@@ -92,7 +94,8 @@ export const useAppStore = defineStore("app", {
             applyAppAppearance(this.settings.appearance);
           }
         } catch (error) {
-          this.lastError = `Local cache: ${String(error)}`;
+          if (!(error instanceof CacheSuspendedError))
+            this.lastError = `Local cache: ${String(error)}`;
           cacheReadError = error;
         }
       }
@@ -165,9 +168,13 @@ export const useAppStore = defineStore("app", {
       if (!cachedBootstrap || !this.authenticated || !this.activeSession) return;
       try {
         await saveMainCache(cachedBootstrap, this.activeSession);
+        if (cacheError && this.lastError === cacheError) this.lastError = undefined;
+        cacheError = undefined;
       } catch (error) {
         reportBrowserError(error, "cache-write");
-        this.lastError = `Local cache: ${String(error)}`;
+        if (error instanceof CacheSuspendedError) return;
+        cacheError = `Local cache: ${String(error)}`;
+        this.lastError = cacheError;
       }
     },
     async populateReadingCache() {
