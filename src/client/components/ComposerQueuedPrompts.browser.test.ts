@@ -35,6 +35,9 @@ for (const width of [390, 1100]) {
         await page.getByText("Ordinary follow-up", { exact: true }).waitFor();
         const notices = page.locator(".composer-queue__item--notice");
         expect(await notices.count()).toBe(2);
+        expect(await notices.nth(0).locator("svg.lucide-list-ordered").count()).toBe(1);
+        expect(await notices.nth(1).locator("svg.lucide-compass").count()).toBe(1);
+        expect(await notices.locator("svg.lucide-bell").count()).toBe(0);
         for (const notice of await notices.all()) {
           expect(await notice.getByRole("button").count()).toBe(0);
           expect(await notice.textContent()).toContain("Meaningful report");

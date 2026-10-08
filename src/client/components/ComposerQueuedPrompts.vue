@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, Compass, ListOrdered, X } from "@lucide/vue";
+import { Compass, ListOrdered, X } from "@lucide/vue";
 import type { QueuedPrompt } from "@/shared/types";
 
 const props = defineProps<{
@@ -30,8 +30,7 @@ function queuedPromptLabel(prompt: QueuedPrompt): string {
             : 'composer-queue__item--follow-up',
       ]"
     >
-      <Bell v-if="prompt.runtimeNoticeKind" class="composer-queue__icon" :size="17" />
-      <Compass v-else-if="prompt.kind === 'steer'" class="composer-queue__icon" :size="17" />
+      <Compass v-if="prompt.kind === 'steer'" class="composer-queue__icon" :size="17" />
       <ListOrdered v-else class="composer-queue__icon" :size="17" />
       <span class="composer-queue__text">{{ prompt.text }}</span>
       <button

@@ -16,6 +16,7 @@ import {
   defineTask,
   defineTool,
   Harness,
+  InboxDoc,
   LiveDoc,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -508,6 +509,90 @@ test("silent detached cron creates no report or steering while main is busy", as
   await submission.wait(context);
   await main.waitForIdle(context);
   expect(JSON.stringify((await main.context(context)).messages)).not.toContain("NO_REPLY");
+});
+
+test.each([
+  ["main-detached", false],
+  ["main-detached", true],
+  ["daily-detached", false],
+  ["daily-detached", true],
+] as const)("cron %s final queues rather than steers (main busy=%s)", async (kind, busy) => {
+  const { faux, orchestration, open, registry } = await fixture();
+  let entered = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  registry.install(
+    defineExtension({
+      name: "cron-queue-test",
+      tools: [
+        defineTool({
+          name: "hold",
+          description: "hold main",
+          parameters: Type.Object({}),
+          replay: "safe",
+          execute: async () => {
+            entered = true;
+            await gate;
+            return { content: [{ type: "text", text: "released" }] };
+          },
+        }),
+      ],
+    }),
+  );
+  const { main } = await open();
+  faux.setResponses(
+    Array.from({ length: 10 }, () => (request) => {
+      const last = request.messages.findLast((message) => message.role !== "system")!;
+      if (last.role === "user" && JSON.stringify(last.content).includes("hold main"))
+        return fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" });
+      if (last.role === "user" && JSON.stringify(last.content).includes("scheduled work"))
+        return fauxAssistantMessage([fauxText("cron final")]);
+      return fauxAssistantMessage([
+        fauxText(last.role === "toolResult" ? "main finished first" : "cron acknowledged"),
+      ]);
+    }),
+  );
+  const submission = busy
+    ? await main.submit({ type: "input", content: "hold main" }, context)
+    : undefined;
+  if (busy) await until(async () => entered);
+  const job = await orchestration.addJob({
+    prompt: "scheduled work",
+    session: { kind },
+    schedule: { kind: "at", in: "1h" },
+  });
+  try {
+    await main.commit(async (tx) => {
+      (await tx.doc(OrchestrationDoc)).jobs[job.id]!.nextAt = Date.now() - 1;
+    }, context);
+    await orchestration.tick();
+    await until(async () => (await orchestration.listRunLogs(job.id))[0]?.status === "completed");
+    if (busy) {
+      await main.commit(async (tx) => {
+        const inbox = await tx.doc(InboxDoc, main.id);
+        expect(inbox.items).toHaveLength(1);
+        expect(inbox.items[0]!.mode).toBe("followUp");
+        const item = inbox.items[0]!;
+        if (item.mode === "write") throw new Error("Expected a queued input");
+        expect(decodeRuntimeNotice(item.content)?.kind).toBe("cron");
+      }, context);
+      expect(JSON.stringify((await main.context(context)).messages)).not.toContain("cron final");
+    }
+  } finally {
+    release();
+  }
+  await submission?.wait(context);
+  await main.waitForIdle(context);
+  const messages = (await main.context(context)).messages;
+  const reports = messages.filter(
+    (message) => message.role === "user" && decodeRuntimeNotice(message.content)?.kind === "cron",
+  );
+  expect(reports).toHaveLength(1);
+  const replies = messages.filter((message) => message.role === "assistant");
+  expect(replies.at(-1)).toMatchObject({ content: [fauxText("cron acknowledged")] });
+  if (busy) expect(replies.at(-2)).toMatchObject({ content: [fauxText("main finished first")] });
 });
 
 test("inline cron tools use the originating workspace and restore main cwd", async () => {

@@ -660,6 +660,8 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
               {
                 type: "input",
                 content,
+                // Cron finals wait for the next main turn; subagent results
+                // steer their parent. Idle recipients start a regular turn.
                 whenBusy: task.input.runId ? "followUp" : "steer",
                 requestId,
               },
