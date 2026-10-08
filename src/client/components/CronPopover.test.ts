@@ -108,7 +108,8 @@ describe("cron and subagents popover", () => {
       vi.mocked(api.listRunningSubagents).mockResolvedValue([{ ...agent }]);
       wrapper.getComponent({ name: "FullPopover" }).vm.$emit("toggle", { newState: "open" });
       await flushPromises();
-      expect(agentPanel.text()).toContain("Start time unavailable");
+      expect(agentPanel.text()).not.toContain("Start time unavailable");
+      expect(agentPanel.get(".cron-popover__run-details").findAll("span")).toHaveLength(2);
       expect(agentPanel.text()).not.toContain("1970");
       expect(cronPanel.attributes("style")).toContain("display: none");
       expect((wrapper.get("#cron-test-subagents-panel").element as HTMLElement).style.display).toBe(

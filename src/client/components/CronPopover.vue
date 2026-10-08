@@ -203,10 +203,8 @@ onBeforeUnmount(() => {
               <div class="cron-popover__run-prompt">{{ agent.prompt }}</div>
               <div class="cron-popover__run-details">
                 <span>{{ workspaceLabel(agent.workspaceId) }}</span>
-                <span>{{
-                  agent.startedAtMs === null
-                    ? "Start time unavailable"
-                    : formatTimestamp(agent.startedAtMs)
+                <span v-if="agent.startedAtMs !== null">{{
+                  formatTimestamp(agent.startedAtMs)
                 }}</span>
                 <span>{{ agent.sessionId }}</span>
               </div>
