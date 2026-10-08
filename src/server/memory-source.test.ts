@@ -22,8 +22,7 @@ test("leaf and merge requests contain only their own sources, never the precedin
       const user = request.messages[1]!;
       expect(user.role).toBe("user");
       const content = user.content as string;
-      const prefix =
-        `Compress this message or merge these two child lines into one line of at most 80 UTF-8 bytes. The following ruler is 80 ASCII bytes long; non-ASCII text needs more bytes per character:\n${"-".repeat(80)}\nUse only the source below:\n<input>\n`;
+      const prefix = `Compress this message or merge these two child lines into one line of at most 80 UTF-8 bytes. The following ruler is 80 ASCII bytes long; non-ASCII text needs more bytes per character:\n${"-".repeat(80)}\nUse only the source below:\n<input>\n`;
       expect(content.startsWith(prefix)).toBe(true);
       expect(content.endsWith("\n</input>")).toBe(true);
       const source = content.slice(prefix.length, -"\n</input>".length);
