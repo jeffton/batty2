@@ -55,6 +55,7 @@ function queuedPromptLabel(prompt: QueuedPrompt): string {
 .composer-queue__item {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-auto-rows: minmax(var(--button-size), auto);
   align-items: center;
   gap: 0.55rem;
   padding: 0.5rem calc(var(--safe-area-right) + 0.45rem) 0.5rem calc(var(--safe-area-left) + 0.8rem);

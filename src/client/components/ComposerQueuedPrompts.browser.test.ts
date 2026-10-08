@@ -33,6 +33,16 @@ for (const width of [390, 1100]) {
       try {
         await page.goto(url);
         await page.getByText("Ordinary follow-up", { exact: true }).waitFor();
+        const items = page.locator(".composer-queue__item");
+        const heights = await items.evaluateAll((elements) =>
+          elements.map((element) => element.getBoundingClientRect().height),
+        );
+        expect(heights).toHaveLength(4);
+        for (const height of heights) {
+          expect(height).toBe(heights[2]);
+          expect(height).toBeGreaterThanOrEqual(44);
+        }
+        await page.screenshot({ path: `/tmp/batty2-queue-height-${width}-${colorScheme}.png` });
         const notices = page.locator(".composer-queue__item--notice");
         expect(await notices.count()).toBe(2);
         expect(await notices.nth(0).locator("svg.lucide-list-ordered").count()).toBe(1);
