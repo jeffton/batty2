@@ -27,6 +27,7 @@ import {
   type Storage,
 } from "@earendil-works/pi-durable";
 
+import type { MemorySearch, MemorySearchOptions } from "./memory-search";
 import { ByteCache } from "../shared/byte-cache";
 import { decodeRuntimeNotice } from "./runtime-notices";
 import { WorkerDoc } from "./orchestration";
@@ -412,6 +413,8 @@ cover one message each; the older the messages, the more a line covers.
 A message not summarized yet shows as "(not summarized yet: zoom it)".
 No message appears in full, not even the last ones.
 
+Use memory_search({query}) to find forgotten topics in original text, then zoom the returned id. Literal words match together; tools/results are opt-in.
+
 Navigating: zoom(id, n) opens line id+n into the two lines of n/2
 messages it was made from; zoom(id, 1) gives its uncompressed non-thought
 text projection. Images are represented by placeholders; complete message
@@ -445,6 +448,27 @@ export function createMemory(config: MemoryConfig, models: Models) {
   let unsubscribeClose = () => {};
   const validPackets = new Set<string>();
   let storage: Storage;
+  let searchIndex: MemorySearch | undefined;
+  async function indexSearch(context: Context) {
+    if (!searchIndex) return;
+    let next = await searchIndex.cursor(main.id);
+    while (next < index.count) {
+      context.abortSignal?.throwIfAborted();
+      const leaves: MemoryLeaf[] = [];
+      for (let id = next; id < Math.min(next + 128, index.count); id++)
+        leaves.push(await leafAt(id, context));
+      await searchIndex.append(main.id, next, leaves);
+      next += leaves.length;
+    }
+  }
+  async function search(options: MemorySearchOptions, context = BACKGROUND_CONTEXT) {
+    return exclusive(async () => {
+      if (!searchIndex) throw new Error("Memory search index is not configured");
+      await syncTo(Number.MAX_SAFE_INTEGER, context);
+      await indexSearch(context);
+      return searchIndex.search(main.id, options);
+    });
+  }
   const cache = new ByteCache<MemoryLeaf | { text: string }>(2 * 1024 * 1024, (value) =>
     utf8Bytes(JSON.stringify(value)),
   );
@@ -1047,6 +1071,30 @@ export function createMemory(config: MemoryConfig, models: Models) {
     sections: [section("memory", () => MEMORY_PROMPT)],
     tools: [
       defineTool({
+        name: "memory_search",
+        description:
+          "Search original main-memory text using 1–12 literal words (all must match), newest first. Returns bounded snippets with original id/date/kind; use zoom(id, 1) for full text. Tools/results excluded unless includeTools is true. No semantic search.",
+        parameters: Type.Object({
+          query: Type.String({ maxLength: 256 }),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+          includeTools: Type.Optional(Type.Boolean()),
+        }),
+        replay: "safe",
+        execute: async (options, api, context) => {
+          const worker = await api.snapshot(WorkerDoc, api.conversationId, context);
+          if (
+            !conversationPolicy(
+              api.conversationId === main.id ? "assistant" : "worker",
+              worker?.workspaceId,
+            ).mainMemory
+          )
+            throw new Error("Main memory is available only to Roy workers");
+          return {
+            content: [{ type: "text", text: JSON.stringify(await search(options, context)) }],
+          };
+        },
+      }),
+      defineTool({
         name: "zoom",
         description:
           "Open prepared main-memory line id+n into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
@@ -1175,7 +1223,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
   });
   return {
     extension,
-    async bind(open: Harness, root: Conversation, treeStorage: Storage) {
+    async bind(
+      open: Harness,
+      root: Conversation,
+      treeStorage: Storage,
+      searchStorage?: MemorySearch,
+    ) {
+      searchIndex = searchStorage;
       storage = treeStorage;
       harness = open;
       main = root;
@@ -1192,6 +1246,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       const start = (maximum: number) => {
         void exclusive(async () => {
           await syncTo(maximum, background.context);
+          await indexSearch(background.context);
           await settleNow(background.context);
         }).catch((error) => {
           if (!background.context.abortSignal?.aborted) report(error);
@@ -1293,6 +1348,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
         ],
       };
     },
+    search,
     async usage() {
       return {
         ...((await harness.snapshot(MemoryUsageDoc, main.id, BACKGROUND_CONTEXT)) ?? {

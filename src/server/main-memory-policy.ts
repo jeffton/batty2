@@ -1,6 +1,6 @@
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 
-export const MAIN_MEMORY_TOOLS = new Set(["zoom", "date", "memory_overview"]);
+export const MAIN_MEMORY_TOOLS = new Set(["zoom", "date", "memory_search", "memory_overview"]);
 
 export function isMainMemoryView(message: Message): boolean {
   if (message.role !== "user" || message.timestamp !== 0) return false;

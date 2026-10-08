@@ -35,6 +35,7 @@ import { normalizeMessage, normalizeBlocks } from "./pi-state";
 import { hydrateRuntimeResultArtifacts } from "./runtime-result-artifacts-history";
 import { queuedPromptDisplay } from "./queued-prompt-display";
 import { createHistoryIndex } from "./history-index";
+import { createMemorySearch } from "./memory-search";
 import { conversationPolicy } from "./conversation-policy";
 import { ProviderAuthService } from "./provider-auth";
 import { ProviderUsageService } from "./provider-usage";
@@ -237,7 +238,7 @@ export class Runtime {
       ...(orchestration.extension.tools ?? []),
       ...(memory.extension.tools ?? []),
     ]);
-    await memory.bind(harness, main, storage);
+    await memory.bind(harness, main, storage, await createMemorySearch(database));
     const streamSimple = models.streamSimple.bind(models);
     models.streamSimple = (model, request, options) => {
       memory.validateRequest(request, options);
