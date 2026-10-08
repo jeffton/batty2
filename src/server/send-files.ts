@@ -191,9 +191,16 @@ export async function storeSentFiles(
     "utf8",
   );
 
-  return files.map((file) =>
-    toDescriptor(options.baseUrl, options.workspaceId, options.sessionId, options.toolCallId, file),
-  );
+  return files.map((file) => ({
+    ...toDescriptor(
+      options.baseUrl,
+      options.workspaceId,
+      options.sessionId,
+      options.toolCallId,
+      file,
+    ),
+    storedPath: path.resolve(dir, file.storedName),
+  }));
 }
 
 export async function resolveSentFile(options: ResolveSentFileOptions): Promise<ResolvedSentFile> {

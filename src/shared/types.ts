@@ -28,6 +28,7 @@ export interface SentFileDescriptor {
   kind: "file" | "image" | "video";
   downloadUrl: string;
   previewUrl?: string;
+  storedPath?: string;
 }
 
 export interface SiteDescriptor {

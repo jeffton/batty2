@@ -12,6 +12,7 @@ import type { ToolExecutionDetails, WorkspaceInfo } from "@/shared/types";
 import type { AppConfig } from "./config";
 import type { BrowserService } from "./browser-service";
 import { storeSentFiles } from "./send-files";
+import { ATTACHMENT_DELIVERY_INSTRUCTION, reportWithAttachments } from "./attachment-contract";
 import { createSite, deleteSite, getSite } from "./sites";
 import { runWebSearch } from "./web-search";
 import {
@@ -321,11 +322,11 @@ export function createAttachFilesTool({
   return {
     name: "attach-files",
     label: "Attach Files",
-    description:
-      "Copy files into Batty storage so they appear as attachments in the final response and downloads during the tool call.",
+    description: `Copy files into Batty storage so they appear as attachments in the current agent’s response and downloads during the tool call. ${ATTACHMENT_DELIVERY_INSTRUCTION}`,
     promptSnippet: "Attach files to the final response without leaving Batty.",
     promptGuidelines: [
       "Use this tool when the user asks you to send or attach one or more files.",
+      ATTACHMENT_DELIVERY_INSTRUCTION,
       "Pass every file path you want to attach in paths.",
       "Only attach files that already exist in the workspace or as absolute paths you have access to.",
     ],
@@ -348,7 +349,15 @@ export function createAttachFilesTool({
       const count = sentFiles.length;
       const noun = count === 1 ? "file" : "files";
       return {
-        content: [{ type: "text", text: `Attached ${count} ${noun} for the user.` }],
+        content: [
+          {
+            type: "text",
+            text: reportWithAttachments(
+              `Attached ${count} ${noun} in this execution scope.`,
+              sentFiles,
+            ),
+          },
+        ],
         details: { sentFiles },
       };
     },

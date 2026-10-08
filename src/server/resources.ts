@@ -5,6 +5,7 @@ import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { AppConfig } from "./config";
 import { stateDirPath } from "./options";
 import { listWorkspaces } from "./workspaces";
+import { ATTACHMENT_DELIVERY_INSTRUCTION } from "./attachment-contract";
 
 export function createResources(config: AppConfig) {
   const agentDir = stateDirPath(config.battyDir);
@@ -47,6 +48,7 @@ export function createResources(config: AppConfig) {
     extension: defineExtension({
       name: "batty-resources",
       sections: [
+        section("attachments", () => ATTACHMENT_DELIVERY_INSTRUCTION),
         section(
           "assistant",
           () =>

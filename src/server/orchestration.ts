@@ -41,6 +41,7 @@ import {
 } from "./runtime-notices.js";
 
 import { runtimeResultArtifacts } from "./runtime-result-artifacts.js";
+import { reportWithAttachments } from "./attachment-contract.js";
 import type { AgentTurnArtifacts } from "./agent-turn-file-changes.js";
 import { MAIN_MEMORY_TOOLS, withoutMainMemory } from "./main-memory-policy.js";
 
@@ -608,7 +609,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           const target = (await runtime.conversation(targetId, ctx))!;
           const content = encodeRuntimeNotice({
             kind: task.input.runId ? "cron" : "subagent",
-            text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${text}`,
+            text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${reportWithAttachments(text, artifacts?.sentFiles)}`,
             data: {
               ...(artifacts ? { runtimeResultArtifacts: artifacts } : {}),
               runtimeNotice: {
@@ -866,13 +867,14 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         // No terminate control: the generation remains live while this tool waits.
         // waitForTask replays safely after restart; completion resumes the model.
         const settled = await api.waitForTask(target, ctx);
+        const artifacts = (await api.snapshot(DeliveryRecord, String(target), ctx))?.artifacts;
         return {
           ...reply(
             settled.state.outcome.status === "completed"
-              ? settled.state.outcome.result
+              ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
               : `Subagent ${settled.state.outcome.status}`,
           ),
-          details: (await api.snapshot(DeliveryRecord, String(target), ctx))?.artifacts ?? {},
+          details: artifacts ?? {},
         };
       }
       if (args.action === "await")
@@ -1006,10 +1008,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       harness.resume();
       if (isAsync) return reply(`Started. Session ID: ${result.workerId}`);
       const settled = await api.waitForTask(result.taskId, ctx);
+      const artifacts = (await api.snapshot(DeliveryRecord, String(result.taskId), ctx))?.artifacts;
       return {
         ...reply(
           settled.state.outcome.status === "completed"
-            ? settled.state.outcome.result
+            ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
             : `Subagent ${settled.state.outcome.status}`,
         ),
         details: {
@@ -1022,7 +1025,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             respondIn: "tool-call",
             includePreviousContext: args.includePreviousContext ?? false,
           },
-          ...(await api.snapshot(DeliveryRecord, String(result.taskId), ctx))?.artifacts,
+          ...artifacts,
         } as unknown as Record<string, JsonValue>,
       };
     },

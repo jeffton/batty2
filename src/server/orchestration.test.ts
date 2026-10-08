@@ -1132,6 +1132,7 @@ test.each([false, true])(
     const { faux, orchestration, open, registry } = await fixture();
     const file = {
       id: "f",
+      storedPath: "/var/lib/batty2/sent-files/child/Cabin.jpg",
       name: "Cabin.jpg",
       size: 1,
       mimeType: "image/jpeg",
@@ -1162,10 +1163,14 @@ test.each([false, true])(
       }),
     );
     const { harness, main } = await open();
+    let joinedModelInput = "";
+    let reportModelInput = "";
     faux.setResponses(
       Array.from({ length: 30 }, () => (request) => {
         const last = request.messages.findLast((m) => m.role !== "system")!;
         const text = JSON.stringify(last.content);
+        if (last.role === "toolResult" && text.includes("helper done")) joinedModelInput = text;
+        if (last.role === "user" && text.includes("cron finished")) reportModelInput = text;
         if (last.role === "user" && text.includes("artifact outer"))
           return fauxAssistantMessage(
             [fauxToolCall("subagent", { action: "run", prompt: "artifact inner", async: !sync })],
@@ -1212,9 +1217,74 @@ test.each([false, true])(
       fileChanges: [{ path: "a.ts" }],
     });
     expect(JSON.stringify(reports[0])).toContain("-before");
+    for (const input of [joinedModelInput, reportModelInput]) {
+      expect(input).toContain(file.storedPath);
+      expect(input).toContain(file.name);
+      expect(input).toContain("call attach-files");
+      expect(input).toContain("Copying attachment:// links does not deliver attachments");
+    }
   },
   15000,
 );
+
+test("async subagent reports expose stored attachment paths in parent model input", async () => {
+  const { faux, orchestration, open, registry } = await fixture();
+  const file = {
+    id: "child-file",
+    name: "chosen.png",
+    storedPath: "/var/lib/batty2/sent-files/child/chosen.png",
+    size: 1,
+    mimeType: "image/png",
+    kind: "image",
+    downloadUrl: "/api/sent-files/child-file",
+  };
+  registry.install(
+    defineExtension({
+      name: "async-attachment-fixture",
+      tools: [
+        defineTool({
+          name: "attach-fixture",
+          description: "Emit a child attachment",
+          parameters: Type.Object({}),
+          execute: async () => ({
+            content: [{ type: "text", text: "Attached" }],
+            details: { sentFiles: [file] },
+          }),
+        }),
+      ],
+    }),
+  );
+  const { main } = await open();
+  let reportInput = "";
+  faux.setResponses(
+    Array.from({ length: 20 }, () => (request) => {
+      const last = request.messages.findLast((m) => m.role !== "system")!;
+      const text = JSON.stringify(last.content);
+      if (last.role === "user" && text.includes("start attachment worker"))
+        return fauxAssistantMessage(
+          [fauxToolCall("subagent", { action: "run", prompt: "produce attachment" })],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("produce attachment"))
+        return fauxAssistantMessage([fauxToolCall("attach-fixture", {})], {
+          stopReason: "toolUse",
+        });
+      if (last.role === "toolResult" && last.toolName === "attach-fixture")
+        return fauxAssistantMessage([fauxText("child artifact ready")]);
+      if (last.role === "user" && text.includes("child artifact ready")) reportInput = text;
+      return fauxAssistantMessage([fauxText("parent acknowledged")]);
+    }),
+  );
+  await (
+    await main.submit({ type: "input", content: "start attachment worker" }, context)
+  ).wait(context);
+  await until(async () => (await orchestration.listRunning()).length === 0);
+  await main.waitForIdle(context);
+  expect(reportInput).toContain(file.name);
+  expect(reportInput).toContain(file.storedPath);
+  expect(reportInput).toContain("call attach-files");
+  expect(reportInput).toContain("do not automatically forward every draft");
+});
 
 test("queue admits the current report before delivering the queued prompt", async () => {
   const { faux, orchestration, open } = await fixture(1000);
