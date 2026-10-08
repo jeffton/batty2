@@ -1,4 +1,12 @@
-export const errorStages = ["window", "unhandledrejection", "vue", "file-read", "submit"] as const;
+export const errorStages = [
+  "window",
+  "unhandledrejection",
+  "vue",
+  "file-read",
+  "submit",
+  "cache-read",
+  "cache-write",
+] as const;
 export type ErrorStage = (typeof errorStages)[number];
 
 export interface BrowserErrorReport {
@@ -33,12 +41,19 @@ export const errorNames = [
   "SecurityError",
   "InvalidStateError",
   "QuotaExceededError",
+  "UnknownError",
+  "TransactionInactiveError",
+  "DataCloneError",
   "Unknown",
 ];
 export function safeErrorName(value: string): string {
   return errorNames.includes(value) ? value : "Unknown";
 }
 const diagnosticMessages = new Set([
+  "Cache transaction aborted",
+  "Cache transaction aborted: read",
+  "Cache transaction aborted: write",
+  "Cache transaction aborted: clear",
   "Failed to fetch",
   "Load failed",
   "NetworkError when attempting to fetch resource.",

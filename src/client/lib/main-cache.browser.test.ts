@@ -1,14 +1,14 @@
 // @vitest-environment node
 import path from "node:path";
-import { chromium, type Browser, type Page } from "patchright";
+import { chromium, webkit, type Browser, type Page } from "playwright-core";
 import { createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, expect, test } from "vite-plus/test";
 
 let browser: Browser;
+let safari: Browser;
 let server: ViteDevServer;
 let url: string;
-// Patchright isolates evaluations by default; this fixture exposes its API in the main world.
-const evaluate = <T>(page: Page, fn: () => T) => page.evaluate(fn, undefined, undefined, false);
+const evaluate = <T>(page: Page, fn: () => T) => page.evaluate(fn);
 async function fixture(context = browser) {
   const page = await context.newPage();
   await page.goto(url);
@@ -25,9 +25,11 @@ beforeAll(async () => {
   await server.listen();
   url = `${server.resolvedUrls!.local[0]}src/client/lib/MainCache.fixture.html`;
   browser = await chromium.launch({ headless: true });
+  safari = await webkit.launch({ headless: true });
 }, 30_000);
 afterAll(async () => {
   await browser?.close();
+  await safari?.close();
   await server?.close();
 });
 
@@ -275,3 +277,102 @@ test("quota error aborts the native transaction and keeps the previous complete 
   expect(result.restored.session.messages[0].id).toBe("1");
   await context.close();
 });
+
+test.each(["Chromium", "WebKit"])(
+  "%s cache survives suspension, closed connections, and a native read abort without unhandled rejections",
+  async (engine) => {
+    const context = await (engine === "WebKit" ? safari : browser).newContext();
+    const page = await context.newPage();
+    await page.goto(url);
+    await page.waitForFunction(() => Boolean((window as any).cache));
+    const result = await evaluate(page, async () => {
+      const c = (window as any).cache;
+      const unhandled: string[] = [];
+      window.addEventListener("unhandledrejection", (event) => {
+        unhandled.push(String(event.reason));
+      });
+      let opens = 0;
+      let connection: IDBDatabase;
+      const nativeOpen = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (...args) {
+        opens += 1;
+        const operation = nativeOpen.apply(this, args);
+        operation.addEventListener("success", () => {
+          connection = operation.result;
+        });
+        return operation;
+      };
+      const bootstrap = { cacheScope: "lifecycle", cacheExpiresAt: Date.now() + 60_000 };
+      const session = {
+        id: "1",
+        sessionId: "1",
+        streamId: "a",
+        revision: 1,
+        activeTools: [],
+        messages: [{ id: "1", role: "user", timestamp: Date.now(), blocks: [] }],
+      };
+      await c.saveMainCache(bootstrap, session);
+      const suspendedConnection = connection!;
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      await Promise.resolve();
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      await c.saveMainCache(bootstrap, { ...session, revision: 2 });
+      suspendedConnection.dispatchEvent(new Event("close"));
+      const afterResume = await c.readMainCache();
+      // A storage process termination closes the connection without pagehide.
+      connection!.close();
+      connection!.dispatchEvent(new Event("close"));
+      await c.saveMainCache(bootstrap, { ...session, revision: 3 });
+      const getAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (...args) {
+        const operation = getAll.apply(this, args);
+        this.transaction.abort();
+        return operation;
+      };
+      let abort = "";
+      try {
+        await c.readMainCache();
+      } catch (error) {
+        abort = String(error);
+      } finally {
+        IDBObjectStore.prototype.getAll = getAll;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const retained = await c.readMainCache();
+      // Suspend during the read half of a save, not just between finished saves.
+      IDBObjectStore.prototype.getAll = function (...args) {
+        const operation = getAll.apply(this, args);
+        operation.addEventListener(
+          "success",
+          () => {
+            window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+          },
+          { once: true },
+        );
+        IDBObjectStore.prototype.getAll = getAll;
+        return operation;
+      };
+      await c.saveMainCache(bootstrap, { ...session, revision: 4 });
+      const afterOverlappingSuspension = await c.readMainCache();
+      IDBFactory.prototype.open = nativeOpen;
+      return { opens, afterResume, retained, afterOverlappingSuspension, abort, unhandled };
+    });
+    expect(result.opens).toBe(4);
+    expect(result.afterOverlappingSuspension.session.revision).toBe(4);
+    expect(result.afterResume.session.revision).toBe(2);
+    expect(result.retained.session.revision).toBe(3);
+    expect(result.abort).toMatch(/abort/i);
+    expect(result.unhandled).toEqual([]);
+    await context.setOffline(true);
+    expect(await evaluate(page, () => (window as any).cache.readMainCache())).toMatchObject({
+      session: { revision: 4 },
+    });
+    await context.setOffline(false);
+    await page.reload();
+    await page.waitForFunction(() => Boolean((window as any).cache));
+    expect(await evaluate(page, () => (window as any).cache.readMainCache())).toMatchObject({
+      session: { revision: 4 },
+    });
+    await context.close();
+  },
+);

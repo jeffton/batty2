@@ -4,6 +4,8 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 import * as api from "@/client/lib/api";
 import * as updates from "@/client/lib/app-updates";
+import * as cache from "@/client/lib/main-cache";
+import * as browserErrors from "@/client/lib/browser-errors";
 import App from "@/client/App.vue";
 import ChatHeader from "@/client/components/ChatHeader.vue";
 import ChatSessionPane from "@/client/components/ChatSessionPane.vue";
@@ -116,6 +118,29 @@ function deferResponse(kind: (typeof mutations)[number]) {
   else vi.mocked(api.patchMain).mockReturnValueOnce(promise);
   return resolve;
 }
+describe("caught cache diagnostics", () => {
+  it("reports write aborts while preserving the visible cache failure", async () => {
+    const report = vi.spyOn(browserErrors, "reportBrowserError").mockImplementation(() => {});
+    const store = useAppStore();
+    await store.bootstrap();
+    const error = new Error("Cache transaction aborted: write");
+    vi.mocked(cache.saveMainCache).mockRejectedValueOnce(error);
+    await store.persistMainCache();
+    expect(report).toHaveBeenCalledWith(error, "cache-write");
+    expect(store.lastError).toContain("Cache transaction aborted: write");
+    report.mockRestore();
+  });
+  it("reports read aborts after authenticated bootstrap, without an extra bootstrap request", async () => {
+    const report = vi.spyOn(browserErrors, "reportBrowserError").mockImplementation(() => {});
+    const error = new Error("Cache transaction aborted: read");
+    vi.mocked(cache.readMainCache).mockRejectedValueOnce(error);
+    await useAppStore().bootstrap();
+    expect(report).toHaveBeenCalledWith(error, "cache-read");
+    expect(api.getBootstrap).toHaveBeenCalledTimes(1);
+    report.mockRestore();
+  });
+});
+
 describe("main mutation snapshots", () => {
   it.each(mutations)(
     "does not apply a stale %s HTTP response after SSE progressed",

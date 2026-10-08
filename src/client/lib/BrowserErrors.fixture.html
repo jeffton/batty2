@@ -3,12 +3,12 @@
   <body>
     <script type="module">
       import { createApp } from "vue";
-      import { installBrowserErrorReporting } from "./browser-errors.ts";
+      import { installBrowserErrorReporting, reportBrowserError } from "./browser-errors.ts";
       import { getBootstrap, submitMainPrompt } from "./api.ts";
       const app = createApp({});
       installBrowserErrorReporting(app);
       await getBootstrap();
-      window.diagnosticsFixture = { submitMainPrompt, app };
+      window.diagnosticsFixture = { submitMainPrompt, app, reportBrowserError };
     </script>
   </body>
 </html>

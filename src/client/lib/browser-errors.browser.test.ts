@@ -86,6 +86,17 @@ test("browser rejection and caught upload failure reach authenticated server wit
       undefined,
       false,
     );
+    await page.evaluate(
+      () => {
+        (window as any).diagnosticsFixture.reportBrowserError(
+          new Error("Cache transaction aborted: write"),
+          "cache-write",
+        );
+      },
+      undefined,
+      undefined,
+      false,
+    );
     await expect
       .poll(async () => {
         try {
@@ -94,9 +105,10 @@ test("browser rejection and caught upload failure reach authenticated server wit
           return 0;
         }
       })
-      .toBe(4);
+      .toBe(5);
     const reports = JSON.parse(await fs.readFile(file, "utf8"));
     expect(reports.map((r: any) => r.stage).sort()).toEqual([
+      "cache-write",
       "submit",
       "unhandledrejection",
       "vue",
@@ -106,6 +118,10 @@ test("browser rejection and caught upload failure reach authenticated server wit
       status: 413,
       hasFiles: true,
       buildId: "dev",
+    });
+    expect(reports.find((r: any) => r.stage === "cache-write")).toMatchObject({
+      message: "Cache transaction aborted: write",
+      errorName: "Error",
     });
     expect(JSON.stringify(reports)).not.toMatch(/PRIVATE|secret|receipt/);
     expect(reports.every((r: any) => /^[a-f0-9-]{36}$/.test(r.correlationId))).toBe(true);

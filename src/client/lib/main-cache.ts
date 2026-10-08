@@ -36,27 +36,54 @@ function request<T>(request: IDBRequest<T>): Promise<T> {
     request.onerror = () => reject(request.error);
   });
 }
-function transactionDone(transaction: IDBTransaction): Promise<void> {
+function transactionDone(
+  transaction: IDBTransaction,
+  phase: "read" | "write" | "clear",
+): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error ?? new Error("Cache transaction aborted"));
-    transaction.onerror = () => reject(transaction.error);
+    // Request errors bubble before abort. Settle on the terminal event so callers
+    // cannot start the next cache operation while this transaction is still alive.
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error(`Cache transaction aborted: ${phase}`));
   });
 }
+window.addEventListener("pagehide", () => {
+  const pending = database;
+  database = undefined;
+  // close() lets already-issued transactions complete but releases the connection
+  // before suspension. A restored page opens a new connection.
+  void pending?.then(
+    (db) => db.close(),
+    () => {},
+  );
+});
 function open(): Promise<IDBDatabase> {
-  database ??= new Promise((resolve, reject) => {
+  if (database) return database;
+  const pending = new Promise<IDBDatabase>((resolve, reject) => {
     const operation = indexedDB.open(DB_NAME, 1);
     operation.onupgradeneeded = () => {
       operation.result.createObjectStore("metadata");
       operation.result.createObjectStore("messages", { keyPath: "id" });
     };
-    operation.onsuccess = () => resolve(operation.result);
+    operation.onsuccess = () => {
+      const db = operation.result;
+      db.onclose = () => {
+        if (database === pending) database = undefined;
+      };
+      db.onversionchange = () => {
+        if (database === pending) database = undefined;
+        db.close();
+      };
+      resolve(db);
+    };
     operation.onerror = () => {
-      database = undefined;
+      if (database === pending) database = undefined;
       reject(operation.error);
     };
   });
-  return database;
+  database = pending;
+  return pending;
 }
 
 export function retainCacheRecords(records: MessageRecord[], now: number): MessageRecord[] {
@@ -101,12 +128,13 @@ export function authorizePreviewCache(bootstrap: BootstrapPayload): void {
 export async function readMainCache(): Promise<CacheMetadata | undefined> {
   const db = await open();
   const transaction = db.transaction(["metadata", "messages"], "readonly");
-  const done = transactionDone(transaction);
+  const done = transactionDone(transaction, "read");
   const [metadata, records] = await Promise.all([
     request(transaction.objectStore("metadata").get("current")) as Promise<
       CacheMetadata | undefined
     >,
     request(transaction.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
+    done,
   ]);
   await done;
   if (!metadata) return undefined;
@@ -152,10 +180,11 @@ export function saveMainCache(bootstrap: BootstrapPayload, session: SessionState
       if (admitted !== generation || !isCacheAuthorized()) return;
       const db = await open();
       const read = db.transaction(["metadata", "messages"], "readonly");
-      const readDone = transactionDone(read);
+      const readDone = transactionDone(read, "read");
       const [oldMetadata, oldRows] = await Promise.all([
         request(read.objectStore("metadata").get("current")) as Promise<CacheMetadata | undefined>,
         request(read.objectStore("messages").getAll()) as Promise<MessageRecord[]>,
+        readDone,
       ]);
       await readDone;
       if (admitted !== generation || !isCacheAuthorized()) return;
@@ -184,28 +213,33 @@ export function saveMainCache(bootstrap: BootstrapPayload, session: SessionState
         return row;
       });
       const kept = retainCacheRecords(rows, Date.now());
-      const transaction = db.transaction(["metadata", "messages"], "readwrite");
-      const done = transactionDone(transaction);
+      // Serialize/validate before opening the write transaction. Large snapshots
+      // must not keep a native transaction idle while JS prepares its payload.
+      const metadata: CacheMetadata = {
+        epoch: admittedEpoch,
+        bootstrap,
+        session: { ...session, messages: [] },
+        savedAt: Date.now(),
+      };
+      const metadataJson = JSON.stringify(metadata);
+      const totalBytes =
+        kept.reduce((total, row) => total + row.bytes, 0) +
+        new TextEncoder().encode(metadataJson).byteLength;
+      if (totalBytes > CACHE_HARD_LIMIT) throw new Error("Reading cache exceeds the 128 MiB limit");
+      const plainMetadata = JSON.parse(metadataJson);
+      // pagehide can close the read connection while its transaction completes.
+      const writeDb = await open();
+      if (admitted !== generation || !isCacheAuthorized()) return;
+      const transaction = writeDb.transaction(["metadata", "messages"], "readwrite");
+      const done = transactionDone(transaction, "write");
       const messages = transaction.objectStore("messages");
       try {
         if (!sameScope) messages.clear();
         const retainedIds = new Set(kept.map((row) => row.id));
         for (const old of oldById.values()) if (!retainedIds.has(old.id)) messages.delete(old.id);
         for (const row of kept) if (oldById.get(row.id)?.json !== row.json) messages.put(row);
-        // Pinia exposes nested Vue proxies; persist a plain JSON snapshot rather than cloning them.
-        const metadata: CacheMetadata = {
-          epoch: admittedEpoch,
-          bootstrap,
-          session: { ...session, messages: [] },
-          savedAt: Date.now(),
-        };
-        const metadataJson = JSON.stringify(metadata);
-        const totalBytes =
-          kept.reduce((total, row) => total + row.bytes, 0) +
-          new TextEncoder().encode(metadataJson).byteLength;
-        if (totalBytes > CACHE_HARD_LIMIT)
-          throw new Error("Reading cache exceeds the 128 MiB limit");
-        transaction.objectStore("metadata").put(JSON.parse(metadataJson), "current");
+        transaction.objectStore("metadata").put(plainMetadata, "current");
+        transaction.commit();
       } catch (error) {
         transaction.abort();
         await done.catch(() => {});
@@ -225,9 +259,10 @@ export async function clearMainCache(cacheEpoch: string = crypto.randomUUID()): 
   await navigator.locks.request("batty-main-reading-cache", async () => {
     const db = await open();
     const transaction = db.transaction(["metadata", "messages"], "readwrite");
-    const done = transactionDone(transaction);
+    const done = transactionDone(transaction, "clear");
     transaction.objectStore("metadata").clear();
     transaction.objectStore("messages").clear();
+    transaction.commit();
     await done;
   });
   const worker = navigator.serviceWorker?.controller;

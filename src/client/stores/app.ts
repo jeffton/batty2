@@ -3,6 +3,7 @@ import { blockAppReload, checkAppUpdate } from "@/client/lib/app-updates";
 import { primeAgentNotifications } from "@/client/lib/agent-notifications";
 import { syncPushSubscription, unregisterPushSubscription } from "@/client/lib/push-notifications";
 import { withBaseUrl } from "@/client/lib/base-url";
+import { reportBrowserError } from "@/client/lib/browser-errors";
 import { applyAppAppearance } from "@/client/lib/appearance";
 import * as api from "@/client/lib/api";
 import { applyServerEvent, applySessionResponse } from "@/client/lib/session-events";
@@ -71,6 +72,7 @@ export const useAppStore = defineStore("app", {
           { detached: true },
         );
       }
+      let cacheReadError: unknown;
       let authEpoch = localStorage.getItem(CACHE_EPOCH_KEY);
       if (!this.bootstrapped) {
         try {
@@ -91,11 +93,14 @@ export const useAppStore = defineStore("app", {
           }
         } catch (error) {
           this.lastError = `Local cache: ${String(error)}`;
+          cacheReadError = error;
         }
       }
       authEpoch = localStorage.getItem(CACHE_EPOCH_KEY);
       try {
         const payload = await api.getBootstrap();
+        if (payload.authenticated && cacheReadError)
+          reportBrowserError(cacheReadError, "cache-read");
         if (payload.cacheScope === localStorage.getItem(REVOKED_CACHE_SCOPE_KEY))
           payload.authenticated = false;
         if (authEpoch !== localStorage.getItem(CACHE_EPOCH_KEY)) return;
@@ -161,6 +166,7 @@ export const useAppStore = defineStore("app", {
       try {
         await saveMainCache(cachedBootstrap, this.activeSession);
       } catch (error) {
+        reportBrowserError(error, "cache-write");
         this.lastError = `Local cache: ${String(error)}`;
       }
     },
