@@ -350,6 +350,11 @@ it, or import background knowledge. Keep unknowns and unresolved references
 unknown. Preserve who said what, and distinguish corrections from the claims
 they correct; do not turn a proposal, report or uncertainty into a fact.
 
+Write each summary item in the language of the source passage it summarizes;
+do not translate. For mixed-language messages or child summaries, preserve
+each passage's language rather than normalize everything to one language.
+Keep retained quotations, identifiers, code and URLs unchanged.
+
 Goal: let Batty work later as well as if it remembered the whole stretch.
 Space is scarce, so it goes by value:
 
