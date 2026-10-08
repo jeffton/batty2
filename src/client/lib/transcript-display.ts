@@ -1,8 +1,8 @@
-import { NO_REPLY_SENTINEL } from "@/shared/agent-notification";
 import { easyModeMessage } from "@/client/lib/easy-mode";
 import { isAttachmentOutputToolCall } from "@/client/lib/transcript";
 import type { ToolDisplayState, TranscriptMessageView } from "@/client/lib/transcript";
 import {
+  hasNoReplyText,
   isTranscriptDetailsBlock,
   isTranscriptDetailsMessageRole,
 } from "@/shared/chat-only-context";
@@ -65,13 +65,19 @@ function collapsedMessage(
   entry: TranscriptMessageView,
   toolStatesByCallId: Map<string, ToolDisplayState>,
 ): TranscriptMessageView | undefined {
-  const message = easyModeMessage(entry.message, toolStatesByCallId);
+  const original = entry.message;
+  const source =
+    original.role === "assistant" && hasNoReplyText(original.blocks)
+      ? { ...original, blocks: original.blocks.filter((block) => block.type !== "text") }
+      : original;
+  const message = easyModeMessage(source, toolStatesByCallId);
   return message ? { ...entry, message } : undefined;
 }
 
 function hasExpandableDetails(entry: TranscriptMessageView): boolean {
   const message = entry.message;
   if (isTranscriptDetailsMessageRole(message.role)) return true;
+  if (message.role === "assistant" && hasNoReplyText(message.blocks)) return true;
 
   return (
     "blocks" in message &&
@@ -102,7 +108,12 @@ function hidesExpandableDetails(
   }
 
   return originalMessage.blocks.some(
-    (block) => isTranscriptDetailsBlock(block) && !collapsedMessage.blocks.includes(block),
+    (block) =>
+      (isTranscriptDetailsBlock(block) ||
+        (originalMessage.role === "assistant" &&
+          hasNoReplyText(originalMessage.blocks) &&
+          block.type === "text")) &&
+      !collapsedMessage.blocks.includes(block),
   );
 }
 
@@ -152,26 +163,6 @@ export function buildTranscriptDisplayEntries(
     isStreaming?: boolean;
   } = {},
 ): TranscriptDisplayResult {
-  // The sentinel is a transport instruction, not a reply. Keep its work and
-  // artifacts in the view without rendering a sentinel bubble or changing history.
-  entries = entries.flatMap((entry) => {
-    const message = entry.message;
-    if (
-      message.role !== "assistant" ||
-      message.blocks
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("")
-        .trim() !== NO_REPLY_SENTINEL
-    ) {
-      return [entry];
-    }
-    const next = { ...message, blocks: message.blocks.filter((block) => block.type !== "text") };
-    return next.blocks.length > 0 || easyModeMessage(next, toolStatesByCallId)
-      ? [{ ...entry, message: next }]
-      : [];
-  });
-
   if (options.alwaysShowDetails) {
     return {
       entries: entries.map((entry) => ({ kind: "message", entry, showTimestamp: false })),

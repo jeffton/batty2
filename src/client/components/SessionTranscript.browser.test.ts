@@ -117,15 +117,46 @@ for (const width of [390, 1100]) {
       await page.keyboard.press("Enter");
       await page.getByText("Full cron result", { exact: true }).waitFor();
       await page.getByText("Cron artifact", { exact: true }).first().waitFor();
-      expect(await page.getByText("NO_REPLY", { exact: true }).count()).toBe(0);
-      expect(await page.locator(".message--assistant").count()).toBe(0);
+      await page.getByText("NO_REPLY", { exact: true }).waitFor();
+      expect(await page.locator(".message__segment--bubble").count()).toBe(0);
+      expect(
+        await page.getByRole("button", { name: "Copy reply as markdown", exact: true }).count(),
+      ).toBe(0);
       const collapse = page.getByRole("button", { name: "Collapse details", exact: true });
       expect(await collapse.getAttribute("aria-expanded")).toBe("true");
       await page.screenshot({ path: `/tmp/batty2-orphan-${width}-expanded.png` });
       expect(await collapse.evaluate((element) => element === document.activeElement)).toBe(true);
       await page.keyboard.press("Space");
       await page.getByText("Full cron result", { exact: true }).waitFor({ state: "hidden" });
+      expect(await page.getByText("NO_REPLY", { exact: true }).count()).toBe(0);
+      await state(page, "always");
+      await page.getByText("NO_REPLY", { exact: true }).waitFor();
+      expect(await page.locator(".message__segment--bubble").count()).toBe(0);
+      expect(
+        await page.getByRole("button", { name: "Copy reply as markdown", exact: true }).count(),
+      ).toBe(0);
       await page.screenshot({ path: `/tmp/batty2-orphan-${width}-collapsed.png` });
+    } finally {
+      await page.close();
+    }
+  });
+  test(`silent image replies retain their details control at ${width}px`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 800 } });
+    try {
+      await page.goto(url);
+      await state(page, "silent-image");
+      await page.getByRole("img", { name: "Silent image", exact: true }).waitFor();
+      expect(await page.getByText("NO_REPLY", { exact: true }).count()).toBe(0);
+      const toggle = page.getByRole("button", { name: "Show details", exact: true });
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      await page.getByText("NO_REPLY", { exact: true }).waitFor();
+      const collapse = page.getByRole("button", { name: "Collapse details", exact: true });
+      expect(await collapse.evaluate((element) => element === document.activeElement)).toBe(true);
+      expect(await page.locator(".message__segment--bubble").count()).toBe(1);
+      await page.keyboard.press("Space");
+      await page.getByText("NO_REPLY", { exact: true }).waitFor({ state: "hidden" });
+      await toggle.waitFor();
     } finally {
       await page.close();
     }

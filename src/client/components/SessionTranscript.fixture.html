@@ -85,6 +85,26 @@
             ],
             isStreaming: false,
           };
+        if (detail === "silent-image")
+          session.value = {
+            ...session.value,
+            messages: [
+              {
+                ...final,
+                id: "silent-image",
+                blocks: [
+                  { type: "text", text: "NO_REPLY" },
+                  {
+                    type: "image",
+                    url: "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22/%3E",
+                    mimeType: "image/svg+xml",
+                    name: "Silent image",
+                  },
+                ],
+              },
+            ],
+            isStreaming: false,
+          };
         if (detail === "empty-cron")
           session.value = {
             ...session.value,

@@ -12,6 +12,7 @@ import SubagentSessionPopover from "@/client/components/SubagentSessionPopover.v
 import ToolCallBlock from "@/client/components/ToolCallBlock.vue";
 import TranscriptImage from "@/client/components/TranscriptImage.vue";
 import { isAttachmentOutputToolCall } from "@/client/lib/transcript";
+import { hasNoReplyText } from "@/shared/chat-only-context";
 import type { ToolDisplayState } from "@/client/lib/transcript";
 import type { SentFileDescriptor, SiteDescriptor, UiContentBlock, UiMessage } from "@/shared/types";
 
@@ -88,9 +89,11 @@ const assistantSegments = computed<AssistantSegment[]>(() => {
 
   const segments: AssistantSegment[] = [];
   const bubbleKind = props.message.turnPhase === "final" ? "reply" : "interim";
+  const silent = hasNoReplyText(props.message.blocks);
 
   for (const block of props.message.blocks.filter(showAssistantBlock)) {
-    const kind = isBubbleBlock(block) ? bubbleKind : "plain";
+    // Sentinel text is diagnostic; image replies retain their actions and details control.
+    const kind = isBubbleBlock(block) && !(silent && block.type === "text") ? bubbleKind : "plain";
     const previousSegment = segments.at(-1);
 
     if (previousSegment?.kind === kind) {
@@ -102,6 +105,14 @@ const assistantSegments = computed<AssistantSegment[]>(() => {
 
   return segments;
 });
+
+function segmentKey(index: number): string {
+  const kind = assistantSegments.value[index]!.kind;
+  const ordinal = assistantSegments.value
+    .slice(0, index)
+    .filter((segment) => segment.kind === kind).length;
+  return `${props.message.id}-${kind}-${ordinal}`;
+}
 
 const isRuntimeNotice = computed(
   () =>
@@ -448,7 +459,7 @@ onBeforeUnmount(() => {
       </div>
       <template
         v-for="(segment, segmentIndex) in assistantSegments"
-        :key="`${props.message.id}-segment-${segmentIndex}`"
+        :key="segmentKey(segmentIndex)"
       >
         <div
           v-if="segmentIndex === replySegmentIndex && props.showTimestamp"

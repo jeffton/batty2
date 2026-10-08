@@ -17,6 +17,10 @@ function blockText(block: TranscriptContentBlockLike): string {
   return String((block as TranscriptContentBlockLike & { text?: unknown }).text ?? "");
 }
 
+export function hasNoReplyText(blocks: TranscriptContentBlockLike[]): boolean {
+  return blocks.map(blockText).join("").trim() === NO_REPLY_SENTINEL;
+}
+
 export function chatOnlyBlocks<T extends TranscriptContentBlockLike>(
   role: string,
   blocks: T[],

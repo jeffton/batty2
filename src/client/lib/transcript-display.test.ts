@@ -155,12 +155,34 @@ test("silent cron turns retain details, and a sentinel after a real reply keeps 
   ]);
   const expanded = display([notice, silent], { openDetailsSectionKey: "turn:cron" });
   expect(JSON.stringify(expanded)).toContain("Silent work");
-  expect(JSON.stringify(expanded)).not.toContain("NO_REPLY");
-  expect(JSON.stringify(display([notice, silent], { alwaysShowDetails: true }))).not.toContain(
+  expect(JSON.stringify(expanded)).toContain("NO_REPLY");
+  expect(JSON.stringify(display([notice, silent], { alwaysShowDetails: true }))).toContain(
     "NO_REPLY",
   );
   expect(JSON.stringify(display([notice, silent], { isStreaming: true }))).toContain("Silent work");
   expect(silent.blocks).toContainEqual({ type: "text", text: "NO_REPLY" });
+  const textOnly = reply("text-only", { blocks: [{ type: "text", text: " NO_REPLY\n" }] });
+  expect(display([textOnly])).toEqual([
+    { kind: "details-toggle", sectionKey: "turn:text-only", expanded: false },
+  ]);
+  expect(display([textOnly], { openDetailsSectionKey: "turn:text-only" })[0]).toMatchObject({
+    kind: "message",
+    entry: { message: textOnly },
+  });
+  const error = { ...textOnly, stopReason: "error" as const, errorMessage: "Useful failure" };
+  const collapsedError = JSON.stringify(display([error]));
+  expect(collapsedError).toContain("Useful failure");
+  expect(collapsedError).not.toContain("NO_REPLY");
+  const image = {
+    ...textOnly,
+    blocks: [
+      ...textOnly.blocks,
+      { type: "image" as const, url: "/image.png", mimeType: "image/png" },
+    ],
+  };
+  const collapsedImage = JSON.stringify(display([image]));
+  expect(collapsedImage).toContain("/image.png");
+  expect(collapsedImage).not.toContain("NO_REPLY");
   const result = display([notice, reply("real"), silent]);
   expect(result).toHaveLength(1);
   expect(result[0]).toMatchObject({
