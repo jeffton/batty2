@@ -345,6 +345,7 @@ export function createAttachFilesTool({
         toolCallId,
         cwd: workspace.path,
         paths: params.paths,
+        reuseExisting: true,
       });
       const count = sentFiles.length;
       const noun = count === 1 ? "file" : "files";

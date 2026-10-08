@@ -150,6 +150,7 @@ export async function createTools(
     factory: (
       dependencies: any,
     ) => Pick<ToolDefinition<any>, "name" | "description" | "parameters" | "execute">,
+    replay: "safe" | "unsafe" = "unsafe",
   ) => {
     const metadata = factory({
       config,
@@ -162,14 +163,17 @@ export async function createTools(
       name,
       description: metadata.description,
       parameters: metadata.parameters,
+      replay,
       execute: async (args, api, ctx) => {
         const cwd = await toolCwd(api, ctx);
         const workspace = (await listWorkspaces(config)).find(
           (workspace) => cwd === workspace.path || cwd.startsWith(`${workspace.path}${path.sep}`),
         );
         if (!workspace) throw new Error(`No Batty workspace contains ${cwd}`);
-        return bridge(name, () =>
-          factory({ config, browserService, workspace: { ...workspace, path: cwd } }),
+        return bridge(
+          name,
+          () => factory({ config, browserService, workspace: { ...workspace, path: cwd } }),
+          replay,
         ).execute(args, api, ctx);
       },
     });
@@ -179,7 +183,7 @@ export async function createTools(
     bridge("web-search", () => createWebSearchTool(config), "safe"),
     scoped("browser", createBrowserTool),
     scoped("sites", createSitesTool),
-    scoped("attach-files", createAttachFilesTool),
+    scoped("attach-files", createAttachFilesTool, "safe"),
   ];
   const resolveTools = async (api: ToolExecutionApi, ctx: Context) => {
     const agent = await api.agent(ctx);

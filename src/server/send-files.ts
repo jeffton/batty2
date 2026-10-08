@@ -29,6 +29,7 @@ export interface StoreSentFilesOptions {
   toolCallId: string;
   cwd: string;
   paths: string[];
+  reuseExisting?: boolean;
 }
 
 export interface ResolveSentFileOptions {
@@ -152,6 +153,30 @@ export async function storeSentFiles(
     options.sessionId,
     options.toolCallId,
   );
+  const descriptors = (files: StoredSentFileRecord[]) =>
+    files.map((file) => ({
+      ...toDescriptor(
+        options.baseUrl,
+        options.workspaceId,
+        options.sessionId,
+        options.toolCallId,
+        file,
+      ),
+      storedPath: path.resolve(dir, file.storedName),
+    }));
+  if (options.reuseExisting) {
+    try {
+      const manifest = await readManifest(
+        options.rootDir,
+        options.workspaceId,
+        options.sessionId,
+        options.toolCallId,
+      );
+      return descriptors(manifest.files);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   await fs.mkdir(dir, { recursive: true });
 
   const files: StoredSentFileRecord[] = [];
@@ -185,22 +210,14 @@ export async function storeSentFiles(
     createdAt: Date.now(),
     files,
   };
-  await fs.writeFile(
-    path.join(dir, MANIFEST_FILE_NAME),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf8",
-  );
+  // Publish the receipt only after every copy succeeds. Replay before publication
+  // repeats the copies; replay afterwards returns the committed attachment IDs.
+  const manifestPath = path.join(dir, MANIFEST_FILE_NAME);
+  const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporaryManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await fs.rename(temporaryManifestPath, manifestPath);
 
-  return files.map((file) => ({
-    ...toDescriptor(
-      options.baseUrl,
-      options.workspaceId,
-      options.sessionId,
-      options.toolCallId,
-      file,
-    ),
-    storedPath: path.resolve(dir, file.storedName),
-  }));
+  return descriptors(files);
 }
 
 export async function resolveSentFile(options: ResolveSentFileOptions): Promise<ResolvedSentFile> {
