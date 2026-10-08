@@ -57,10 +57,11 @@ test("fresh Roy worker pins its overview across tools and later inputs while new
       ],
     }),
   );
-  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { models, registry }, context);
   main = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
   try {
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     await main.commit(
       (tx) =>
         tx.appendEntry(main.id, {
@@ -165,8 +166,9 @@ test.each([
     registry.install(tools.extension);
     registry.install(orchestration.extension);
     registry.install(memory.extension);
+    const storage = new MemoryStorage();
     const harness = await Harness.open(
-      new MemoryStorage(),
+      storage,
       { models, registry, env: () => new NodeExecutionEnv({ cwd: directory }) },
       context,
     );
@@ -181,7 +183,7 @@ test.each([
       ]);
       orchestration.setContextProvider((id, mode) => memory.contextFor(id, mode));
       await orchestration.bind(harness, main);
-      await memory.bind(harness, main);
+      await memory.bind(harness, main, storage);
       const secret = "exact archived decision " + "x".repeat(200);
       await main.commit(async (tx) => {
         for (let i = 0; i < 8; i++)
@@ -334,13 +336,14 @@ test("automatic worker overview uses the built catalog without waiting for pendi
   );
   const registry = createRegistry();
   registry.install(memory.extension);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { models, registry }, context);
   const main = await harness.root(context, {
     agent: { model: { provider: "faux", modelId: "faux-1" } },
   });
   let settling: Promise<string> | undefined;
   try {
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     await main.commit(
       (tx) =>
         tx.appendEntry(main.id, {

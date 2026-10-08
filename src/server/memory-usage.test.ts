@@ -36,12 +36,13 @@ test("memory ledger measures rejected, correction and rebuild attempts without s
   );
   const registry = createRegistry();
   registry.install(memory.extension);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { models, registry }, context);
   const main = await harness.root(context, {
     agent: { model: { provider: "faux", modelId: "faux-1" } },
   });
   try {
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     expect((await memory.usage()).since).toBeNull();
     await main.commit(
       (tx) =>

@@ -23,12 +23,23 @@ test("session snapshots separate declined main tasks, OptChat preparation/errors
       docs: { ...originalView.docs, "pi.live": { compactions: [{ id: 1 }] } },
     };
     const status = vi.spyOn(runtime.memory, "status");
-    status.mockReturnValue({ pending: 8, totalLeaves: 10, builtLeaves: 2, error: undefined });
+    status.mockReturnValue({
+      settled: 0,
+      cacheBytes: 0,
+      cacheEntries: 0,
+      pending: 8,
+      totalLeaves: 10,
+      builtLeaves: 2,
+      error: undefined,
+    });
     expect(await runtime.state("main", mainView, false)).toMatchObject({
       isCompacting: false,
       memoryPreparation: { pending: 8 },
     });
     status.mockReturnValue({
+      settled: 0,
+      cacheBytes: 0,
+      cacheEntries: 0,
       pending: 0,
       totalLeaves: 10,
       builtLeaves: 10,
@@ -50,7 +61,15 @@ test("session snapshots separate declined main tasks, OptChat preparation/errors
     const workerState = await runtime.state(String(worker.id), workerView, false);
     expect(workerState.isCompacting).toBe(true);
     expect(workerState.memoryPreparation).toBeUndefined();
-    status.mockReturnValue({ pending: 0, totalLeaves: 10, builtLeaves: 10, error: undefined });
+    status.mockReturnValue({
+      settled: 0,
+      cacheBytes: 0,
+      cacheEntries: 0,
+      pending: 0,
+      totalLeaves: 10,
+      builtLeaves: 10,
+      error: undefined,
+    });
     expect((await runtime.state("main", mainView, false)).memoryPreparation?.error).toBeUndefined();
   } finally {
     await runtime?.close();

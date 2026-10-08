@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   isMemoryNoise,
+  fitView,
   planNoiseCleanup,
   renderView,
   stripNoiseClauses,
@@ -69,6 +70,20 @@ test("cleanup reuses useful summaries and preserves all original leaves and IDs"
       nodes,
     ),
   ).toBe(`<chat>\n2+2|${nodes.get("2+2")}\n</chat>`);
+});
+
+test("an entirely silent history has a logarithmic cover rather than one part per leaf", () => {
+  const nodes = new Map<string, string>();
+  let parts: { start: number; count: number }[] = [];
+  for (let id = 0; id < 16384; id++) {
+    nodes.set(`${id}+1`, "");
+    for (let count = 2; (id + 1) % count === 0; count *= 2)
+      nodes.set(`${id + 1 - count}+${count}`, "");
+    parts.push({ start: id, count: 1 });
+    parts = fitView(parts, id + 1, nodes);
+  }
+  expect(parts).toEqual([{ start: 0, count: 16384 }]);
+  expect(renderView(parts, nodes)).toBe("<chat>\n\n</chat>");
 });
 
 test("mixed summaries lose exact noise clauses, never meaningful discussions", () => {

@@ -49,8 +49,9 @@ test("leaf and merge requests contain only their own sources, never the precedin
   );
   const registry = createRegistry();
   registry.install(memory.extension);
+  const storage = new MemoryStorage();
   const harness = await Harness.open(
-    new MemoryStorage(),
+    storage,
     { models, registry, settings: { compaction: { enabled: false } } },
     context,
   );
@@ -66,7 +67,7 @@ test("leaf and merge requests contain only their own sources, never the precedin
         });
       }
     }, context);
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     const overview = await memory.prepare();
     expect(sources.filter((source) => source.startsWith("user: unrelated-"))).toHaveLength(4);
     expect(sources.some((source) => source.includes("\n"))).toBe(true);

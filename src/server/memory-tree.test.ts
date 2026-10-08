@@ -24,7 +24,8 @@ test("authenticated prepared tree traverses to exact leaves without writes or mo
   );
   const registry = createRegistry();
   registry.install(memory.extension);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { models, registry }, context);
   const main = await harness.root(context, {
     agent: { model: { provider: "faux", modelId: "faux-1" } },
   });
@@ -35,7 +36,7 @@ test("authenticated prepared tree traverses to exact leaves without writes or mo
         model: [{ role: "user", content: `original ${i} ${"x".repeat(600)}`, timestamp: i + 1 }],
       });
   }, context);
-  await memory.bind(harness, main);
+  await memory.bind(harness, main, storage);
   await memory.prepare();
   const app = fastify();
   app.decorateRequest("auth", false);

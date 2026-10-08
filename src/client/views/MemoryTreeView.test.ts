@@ -45,3 +45,27 @@ test("loads only overview, expands lazily, reads original and collapses with bre
   expect(expandMemoryNode).toHaveBeenCalledTimes(2);
   wrapper.unmount();
 });
+
+test("back navigation reloads an evicted oversized branch", async () => {
+  vi.mocked(expandMemoryNode).mockClear();
+  vi.mocked(getMemoryTree).mockResolvedValue({ nodes: [root], prepared: 2, total: 2 });
+  vi.mocked(expandMemoryNode).mockImplementation(async (_id, count) =>
+    count === 2
+      ? { children: [{ ...root, count: 1, summary: "x".repeat(600000) }] }
+      : { children: [], text: "original" },
+  );
+  const wrapper = mount(MemoryTreeView, {
+    global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
+  });
+  await flushPromises();
+  await wrapper.get(".node").trigger("click");
+  await flushPromises();
+  await wrapper.get(".node").trigger("click");
+  await flushPromises();
+  await wrapper.get(".tree-controls button").trigger("click");
+  await flushPromises();
+  expect(expandMemoryNode).toHaveBeenCalledTimes(3);
+  expect(expandMemoryNode).toHaveBeenLastCalledWith(0, 2);
+  expect(wrapper.findAll(".node")).toHaveLength(1);
+  wrapper.unmount();
+});

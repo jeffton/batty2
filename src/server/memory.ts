@@ -24,8 +24,10 @@ import {
   type EntryRecord,
   type Harness,
   ProviderDoc,
+  type Storage,
 } from "@earendil-works/pi-durable";
 
+import { ByteCache } from "../shared/byte-cache";
 import { decodeRuntimeNotice } from "./runtime-notices";
 import { WorkerDoc } from "./orchestration";
 import { conversationPolicy } from "./conversation-policy";
@@ -63,7 +65,21 @@ type MemoryIndex = {
   parts: Part[];
   generation?: number;
 };
-type MemoryRebuild = { generation: number; total: number; status: "pending" | "complete" };
+type MemoryRebuild = {
+  generation: number;
+  total: number;
+  status: "pending" | "complete";
+  level?: number;
+};
+export const MemoryMaintenanceDoc = defineDoc<{ generation: number; settled: number }>({
+  kind: "batty.memory-maintenance",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ generation: 0, settled: 0 }),
+});
+const Maintenance = MemoryMaintenanceDoc;
 const Rebuild = defineDoc<MemoryRebuild>({
   kind: "batty.memory-rebuild",
   version: 1,
@@ -238,6 +254,23 @@ export function fitView(
   budget = VIEW_BYTES,
 ): Part[] {
   const result = parts.map((part) => ({ ...part }));
+  // Invisible leaves must not grow the cover indefinitely when its text is empty.
+  for (let i = 0; i + 1 < result.length;) {
+    const a = result[i]!,
+      b = result[i + 1]!;
+    const parent = { start: a.start, count: a.count * 2 };
+    if (
+      a.count === b.count &&
+      a.start % parent.count === 0 &&
+      b.start === a.start + a.count &&
+      nodes.get(key(a)) === "" &&
+      nodes.get(key(b)) === "" &&
+      nodes.get(key(parent)) === ""
+    ) {
+      result.splice(i, 2, parent);
+      i = Math.max(0, i - 1);
+    } else i++;
+  }
   const size = () =>
     result.reduce(
       (sum, part) => sum + utf8Bytes(nodes.get(key(part)) ?? "(not summarized yet: zoom it)"),
@@ -411,8 +444,88 @@ export function createMemory(config: MemoryConfig, models: Models) {
   let unsubscribe = () => {};
   let unsubscribeClose = () => {};
   const validPackets = new Set<string>();
-  const nodes = new Map<string, string>();
-  const leaves = new Map<number, MemoryLeaf>();
+  let storage: Storage;
+  const cache = new ByteCache<MemoryLeaf | { text: string }>(2 * 1024 * 1024, (value) =>
+    utf8Bytes(JSON.stringify(value)),
+  );
+  let maintenance: { generation: number; settled: number };
+  let treeWrites = 0;
+  let checkpointDirty = false;
+  // Only the current overview is pinned; cold branches never enter Pi's tracker cache.
+  let overviewNodes = new Map<string, string>();
+  let overviewParts: Part[] = [];
+  let overviewGeneration = 0;
+  async function readTree<T extends MemoryLeaf | { text: string }>(
+    kind: string,
+    name: string,
+    context: Context,
+  ): Promise<T | undefined> {
+    const cacheKey = `${kind}:${name}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached as T;
+    const record = await storage.findDocument(
+      { kind, scope: { kind: "conversation", conversationId: main.id }, key: name },
+      "current",
+      context,
+    );
+    if (!record) return undefined;
+    const value = (await storage.document(record.id, "current", context))!.value as T;
+    cache.set(cacheKey, value);
+    return value;
+  }
+  const leafAt = async (id: number, context: Context) =>
+    (await readTree<MemoryLeaf>(Leaves.definition.kind, String(id), context))!;
+  const nodeAt = async (part: Part, context: Context, generation = index.generation ?? 0) =>
+    (await readTree<{ text: string }>(Nodes.definition.kind, storedKey(part, generation), context))
+      ?.text;
+  async function releaseTrackers(force = false) {
+    // Pi exposes one mutation-line-safe unload operation. Observers subscribe to
+    // publications, not tracker identity; unloading does not detach them.
+    if (++treeWrites >= 64 || force) {
+      treeWrites = 0;
+      await (harness as Harness & { unloadDocuments(): Promise<void> }).unloadDocuments();
+    }
+  }
+  async function fitParts(
+    parts: Part[],
+    total: number,
+    context: Context,
+    generation = index.generation ?? 0,
+  ) {
+    const available = new Map<string, string>();
+    let result = parts;
+    for (;;) {
+      for (const part of result) {
+        const text = await nodeAt(part, context, generation);
+        if (text !== undefined) available.set(key(part), text);
+      }
+      for (let i = 0; i + 1 < result.length; i++) {
+        const a = result[i]!,
+          b = result[i + 1]!;
+        if (a.count === b.count && a.start % (a.count * 2) === 0 && b.start === a.start + a.count) {
+          const parent = { start: a.start, count: a.count * 2 };
+          const text = await nodeAt(parent, context, generation);
+          if (text !== undefined) available.set(key(parent), text);
+        }
+      }
+      const next = fitView(result, total, available, budget);
+      if (next.length === result.length) return next;
+      result = next;
+    }
+  }
+  async function refreshOverview(context: Context) {
+    const current = new Map<string, string>();
+    const parts = index.parts.map((part) => ({ ...part }));
+    const generation = index.generation ?? 0;
+    for (const part of parts) {
+      const text = await nodeAt(part, context, generation);
+      if (text !== undefined) current.set(key(part), text);
+    }
+    // Publish one coherent generation to workers while maintenance is running.
+    overviewNodes = current;
+    overviewParts = parts;
+    overviewGeneration = generation;
+  }
   let serial: Promise<unknown> = Promise.resolve();
   let rebuilding: Promise<void> | undefined;
   let rebuildProgress:
@@ -435,51 +548,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
     if (loaded) return;
     const stored = await harness.snapshot(Index, main.id, context);
     index = stored ? structuredClone(stored) : { count: 0, cursor: 0, viewCount: 0, parts: [] };
-    for (let i = 0; i < index.count; i++) {
-      leaves.set(i, (await harness.snapshot(Leaves, main.id, String(i), context))!);
-    }
-    for (let count = 1; count <= index.count; count *= 2) {
-      for (let start = 0; start + count <= index.count; start += count) {
-        const node = await harness.snapshot(Nodes, main.id, storedKey({ start, count }), context);
-        if (node) nodes.set(key({ start, count }), node.text);
-      }
-    }
-    const cleanup = planNoiseCleanup(leaves, nodes);
-    if (cleanup.updates.size) {
-      const counts = {
-        excluded: cleanup.excluded.length,
-        affected: cleanup.affected,
-        rebuilt: cleanup.updates.size,
-      };
-      console.log("OptChat noise cleanup dry-run:", counts);
-      if (config.noiseBackupDir) {
-        await mkdir(config.noiseBackupDir, { recursive: true, mode: 0o700 });
-        await chmod(config.noiseBackupDir, 0o700);
-        await writeFile(
-          path.join(config.noiseBackupDir, `noise-${main.id}-${Date.now()}.json`),
-          JSON.stringify({
-            counts,
-            index,
-            excluded: cleanup.excluded,
-            nodes: [...cleanup.updates.keys()].map((name) => [name, nodes.get(name)]),
-          }),
-          { mode: 0o600, flag: "wx" },
-        );
-      }
-      await main.commit(async (tx) => {
-        for (const [name, text] of cleanup.updates)
-          (
-            await tx.doc(
-              Nodes,
-              main.id,
-              storedKey({ start: Number(name.split("+")[0]), count: Number(name.split("+")[1]) }),
-              { text },
-            )
-          ).text = text;
-      }, context);
-      for (const [name, text] of cleanup.updates) nodes.set(name, text);
-      console.log("OptChat noise cleanup applied:", counts);
-    }
+    const checkpoint = await harness.snapshot(Maintenance, main.id, context);
+    maintenance =
+      checkpoint && checkpoint.generation === (index.generation ?? 0)
+        ? structuredClone(checkpoint)
+        : { generation: index.generation ?? 0, settled: 0 };
+    await refreshOverview(context);
     loaded = true;
   }
   async function syncTo(maximum: number, context: Context) {
@@ -516,10 +590,11 @@ export function createMemory(config: MemoryConfig, models: Models) {
           draft.cursor = entry.id;
         }, context);
         for (const leaf of projected) {
-          leaves.set(index.count, leaf);
+          cache.set(`${Leaves.definition.kind}:${index.count}`, leaf);
           index.count++;
         }
         index.cursor = entry.id;
+        await releaseTrackers();
       }
     }
   }
@@ -637,96 +712,143 @@ export function createMemory(config: MemoryConfig, models: Models) {
       }
     }
   }
-  async function build(part: Part, context: Context) {
-    if (nodes.has(key(part))) return;
-    const source =
-      part.count === 1
-        ? `${leaves.get(part.start)!.kind}: ${leaves.get(part.start)!.text}`
-        : `${nodes.get(key({ start: part.start, count: part.count / 2 }))!}\n${nodes.get(key({ start: part.start + part.count / 2, count: part.count / 2 }))!}`;
-    const text =
-      part.count === 1 && isMemoryNoise(leaves.get(part.start)!)
-        ? ""
-        : await compress(source.trim(), context, {
-            ...part,
-            operation: "incremental",
-            generation: index.generation ?? 0,
-          });
-    const committed = await main.commit(async (tx) => {
-      (await tx.doc(Nodes, main.id, storedKey(part), { text })).text = text;
-      const draft = await tx.doc(Index, main.id);
-      if (part.count === 1 && part.start === draft.viewCount) {
-        draft.parts.push(part);
-        draft.viewCount++;
-      }
-      const nodeKey = key(part);
-      const available = {
-        get: (name: string) => (name === nodeKey ? text : nodes.get(name)),
-        has: (name: string) => name === nodeKey || nodes.has(name),
-      };
-      draft.parts = fitView(draft.parts, draft.viewCount, available, budget);
-      return {
-        parts: draft.parts.map((p) => ({ start: p.start, count: p.count })),
-        viewCount: draft.viewCount,
-      };
-    }, context);
-    nodes.set(key(part), text);
-    index.parts = committed.parts;
-    index.viewCount = committed.viewCount;
-    lastError = undefined;
-    config.onProgress?.({ completed: index.viewCount, total: index.count, nodes: nodes.size });
+  async function childText(part: Part, context: Context, generation: number) {
+    const text = await nodeAt(part, context, generation);
+    if (text === undefined)
+      throw new MemoryFatalError(`Missing memory child ${storedKey(part, generation)}`);
+    return text;
   }
-  async function settleNow(parentContext: Context) {
-    const pipeline = withCancel(parentContext);
-    const context = pipeline.context;
-    const pending = new Map<string, Part>();
-    const running = new Map<string, Promise<void>>();
+  async function build(
+    part: Part,
+    context: Context,
+    generation = index.generation ?? 0,
+    operation: MemoryCall["operation"] = "incremental",
+  ) {
+    if ((await nodeAt(part, context, generation)) !== undefined) return;
+    const leaf = part.count === 1 ? await leafAt(part.start, context) : undefined;
+    const source = leaf
+      ? isMemoryNoise(leaf)
+        ? ""
+        : `${leaf.kind}: ${leaf.text}`
+      : [
+          await childText({ start: part.start, count: part.count / 2 }, context, generation),
+          await childText(
+            { start: part.start + part.count / 2, count: part.count / 2 },
+            context,
+            generation,
+          ),
+        ]
+          .filter(Boolean)
+          .join("\n");
+    const text = await compress(source.trim(), context, { ...part, operation, generation });
+    await main.commit(async (tx) => {
+      (await tx.doc(Nodes, main.id, storedKey(part, generation), { text })).text = text;
+    }, context);
+    cache.set(`${Nodes.definition.kind}:${storedKey(part, generation)}`, { text });
+    await releaseTrackers();
+    lastError = undefined;
+  }
+  async function saveMaintenance(context: Context) {
+    await main.commit(async (tx) => {
+      Object.assign(await tx.doc(Maintenance, main.id), maintenance);
+      const draft = await tx.doc(Index, main.id);
+      draft.viewCount = index.viewCount;
+      draft.parts = index.parts;
+    }, context);
+    await refreshOverview(context);
+    await releaseTrackers(true);
+    checkpointDirty = false;
+  }
+  async function repairLegacyNoise(id: number, context: Context) {
+    const leaf = await leafAt(id, context);
+    if (!isMemoryNoise(leaf)) return;
+    for (let count = 1; count <= index.count; count *= 2) {
+      const part = { start: Math.floor(id / count) * count, count };
+      const existing = await nodeAt(part, context);
+      if (existing === undefined) continue;
+      let text = "";
+      if (count > 1) {
+        const left = (await nodeAt({ start: part.start, count: count / 2 }, context))!;
+        const right = (await nodeAt({ start: part.start + count / 2, count: count / 2 }, context))!;
+        text = !left ? right : !right ? left : stripNoiseClauses(existing);
+        if (!text && (left || right)) text = [left, right].filter(Boolean).join("; ");
+      }
+      if (text === existing) continue;
+      await main.commit(async (tx) => {
+        (await tx.doc(Nodes, main.id, storedKey(part), { text })).text = text;
+      }, context);
+      cache.set(`${Nodes.definition.kind}:${storedKey(part)}`, { text });
+      await releaseTrackers();
+    }
+  }
+  async function buildRange(
+    start: number,
+    end: number,
+    count: number,
+    context: Context,
+    generation: number,
+    operation: MemoryCall["operation"],
+  ) {
+    if (start + count > end) return;
+    const pipeline = withCancel(context);
+    let next = start;
     let failure: unknown;
-    const queueParent = (part: Part) => {
-      const count = part.count * 2;
-      const start = Math.floor(part.start / count) * count;
-      const parent = { start, count };
-      if (
-        start + count <= index.count &&
-        !nodes.has(key(parent)) &&
-        !running.has(key(parent)) &&
-        nodes.has(key({ start, count: part.count })) &&
-        nodes.has(key({ start: start + part.count, count: part.count }))
-      )
-        pending.set(key(parent), parent);
-    };
-    const pump = () => {
-      while (running.size < 7 && pending.size && !failure) {
-        const part = pending.values().next().value!;
-        pending.delete(key(part));
-        const work = build(part, context)
-          .then(() => queueParent(part))
-          .catch((error) => {
-            failure ??= error;
-            pipeline.cancel(failure);
-          })
-          .finally(() => {
-            running.delete(key(part));
-            pump();
-          });
-        running.set(key(part), work);
-      }
-    };
     try {
-      for (let i = 0; i < index.count; i++) {
-        if (failure) throw failure;
-        await build({ start: i, count: 1 }, context);
-        // Leaves are strictly ordered; up to seven ready parent merges run alongside the next leaf.
-        for (let count = 1; (i + 1) % count === 0; count *= 2) {
-          if (!nodes.has(key({ start: i + 1 - count, count }))) break;
-          queueParent({ start: i + 1 - count, count });
+      const workers = Array.from({ length: 7 }, async () => {
+        try {
+          for (;;) {
+            pipeline.context.abortSignal?.throwIfAborted();
+            const id = next;
+            next += count;
+            if (id + count > end) return;
+            await build({ start: id, count }, pipeline.context, generation, operation);
+            if (operation === "rebuild" && count === 1) {
+              rebuildProgress!.completed++;
+              if (isMemoryNoise(await leafAt(id, pipeline.context))) rebuildProgress!.excluded++;
+            }
+          }
+        } catch (error) {
+          failure ??= error;
+          pipeline.cancel(error);
+          throw error;
         }
-        pump();
-      }
-      while (running.size) await Promise.all(running.values());
+      });
+      await Promise.allSettled(workers);
       if (failure) throw failure;
     } finally {
       pipeline.cancel();
-      while (running.size) await Promise.all(running.values());
+    }
+  }
+  async function settleNow(context: Context) {
+    if (maintenance.settled === index.count) {
+      if (checkpointDirty) await saveMaintenance(context);
+      return;
+    }
+    // A bounded prefix is published only after its leaves and every newly
+    // completed ancestor are durable. Retry reuses committed children.
+    while (maintenance.settled < index.count) {
+      const start = maintenance.settled;
+      const end = Math.min(start + 64, index.count);
+      const generation = index.generation ?? 0;
+      for (let id = start; id < Math.min(end, index.viewCount); id++)
+        await repairLegacyNoise(id, context);
+      await buildRange(start, end, 1, context, generation, "incremental");
+      for (let count = 2; count <= end; count *= 2)
+        await buildRange(
+          Math.floor(start / count) * count,
+          end,
+          count,
+          context,
+          generation,
+          "incremental",
+        );
+      for (let id = index.viewCount; id < end; id++) index.parts.push({ start: id, count: 1 });
+      index.viewCount = Math.max(index.viewCount, end);
+      index.parts = await fitParts(index.parts, index.viewCount, context);
+      maintenance.settled = end;
+      checkpointDirty = true;
+      config.onProgress?.({ completed: index.viewCount, total: index.count, nodes: cache.size });
+      await saveMaintenance(context);
     }
   }
   async function rebuildAll() {
@@ -746,14 +868,17 @@ export function createMemory(config: MemoryConfig, models: Models) {
         await chmod(config.noiseBackupDir, 0o700);
         await writeFile(
           path.join(config.noiseBackupDir, `rebuild-${main.id}-${Date.now()}.json`),
-          JSON.stringify({ index, nodes: [...nodes] }),
+          JSON.stringify({ index }),
           { mode: 0o600, flag: "wx" },
         );
       }
-      const excluded = [...leaves.values()].filter(isMemoryNoise).length;
-      const longLeaves = [...leaves.values()].filter(
-        (leaf) => !isMemoryNoise(leaf) && utf8Bytes(`${leaf.kind}: ${leaf.text}`) > nodeBytes,
-      ).length;
+      let excluded = 0,
+        longLeaves = 0;
+      for (let id = 0; id < candidate.total; id++) {
+        const leaf = await leafAt(id, context);
+        if (isMemoryNoise(leaf)) excluded++;
+        else if (utf8Bytes(`${leaf.kind}: ${leaf.text}`) > nodeBytes) longLeaves++;
+      }
       console.log("OptChat full rebuild dry-run:", {
         total: candidate.total,
         excluded,
@@ -768,70 +893,24 @@ export function createMemory(config: MemoryConfig, models: Models) {
       return candidate;
     });
     if (!job) return;
-    const fresh = new Map<string, string>();
-    const sourceLeaves = new Map([...leaves].filter(([id]) => id < job.total));
     rebuildProgress = {
       generation: job.generation,
       total: job.total,
-      completed: 0,
-      excluded: [...sourceLeaves.values()].filter(isMemoryNoise).length,
+      completed: job.level && job.level > 1 ? job.total : 0,
+      excluded: 0,
     };
-    const buildFresh = async (part: Part) => {
-      const name = storedKey(part, job.generation);
-      const existing = await harness.snapshot(Nodes, main.id, name, context);
-      if (existing) {
-        fresh.set(key(part), existing.text);
-        if (part.count === 1) rebuildProgress!.completed++;
-        return;
-      }
-      const leaf = sourceLeaves.get(part.start)!;
-      const source =
-        part.count === 1
-          ? isMemoryNoise(leaf)
-            ? ""
-            : `${leaf.kind}: ${leaf.text}`
-          : [
-              fresh.get(key({ start: part.start, count: part.count / 2 }))!,
-              fresh.get(key({ start: part.start + part.count / 2, count: part.count / 2 }))!,
-            ]
-              .filter(Boolean)
-              .join("\n");
-      const text = await compress(source, context, {
-        ...part,
-        operation: "rebuild",
-        generation: job.generation,
-      });
+    // Completed levels are skipped after restart. Within an unfinished level,
+    // indexed node lookups resume the seven bounded workers safely.
+    for (let count = job.level ?? 1; count <= job.total; count *= 2) {
+      await buildRange(0, job.total, count, context, job.generation, "rebuild");
       await main.commit(async (tx) => {
-        await tx.doc(Nodes, main.id, name, { text });
+        (await tx.doc(Rebuild, main.id)).level = count * 2;
       }, context);
-      fresh.set(key(part), text);
-      if (part.count === 1) {
-        rebuildProgress!.completed++;
-        if (rebuildProgress!.completed % 100 === 0)
-          console.log("OptChat full rebuild progress:", rebuildProgress);
-      }
-    };
-    // A complete level is the only input to the next. Seven bounded workers,
-    // and generation-scoped durable nodes, make restart replay cheap and safe.
-    for (let count = 1; count <= job.total; count *= 2) {
-      let next = 0;
-      const workers = Array.from({ length: 7 }, async () => {
-        for (;;) {
-          context.abortSignal?.throwIfAborted();
-          const start = next;
-          next += count;
-          if (start + count > job.total) return;
-          await buildFresh({ start, count });
-        }
-      });
-      const results = await Promise.allSettled(workers);
-      const failed = results.find((result) => result.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
     }
     let parts: Part[] = [];
     for (let start = 0; start < job.total; start++) {
       parts.push({ start, count: 1 });
-      parts = fitView(parts, start + 1, fresh, budget);
+      parts = await fitParts(parts, start + 1, context, job.generation);
     }
     await exclusive(async () => {
       await main.commit(async (tx) => {
@@ -840,13 +919,17 @@ export function createMemory(config: MemoryConfig, models: Models) {
         draft.viewCount = job.total;
         draft.parts = parts;
         (await tx.doc(Rebuild, main.id)).status = "complete";
+        Object.assign(await tx.doc(Maintenance, main.id), {
+          generation: job.generation,
+          settled: job.total,
+        });
       }, context);
-      nodes.clear();
-      for (const [name, text] of fresh) nodes.set(name, text);
       index.generation = job.generation;
       index.viewCount = job.total;
       index.parts = parts;
-      console.log("OptChat full rebuild activated:", { ...rebuildProgress, nodes: fresh.size });
+      maintenance = { generation: job.generation, settled: job.total };
+      await refreshOverview(context);
+      console.log("OptChat full rebuild activated:", rebuildProgress);
       // Includes messages admitted while the isolated generation was building.
       await syncTo(Number.MAX_SAFE_INTEGER, context);
       await settleNow(context);
@@ -860,7 +943,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
     exclusive(async () => {
       await load(context);
       await settleNow(context);
-      return renderView(index.parts, nodes);
+      return renderView(overviewParts, overviewNodes);
     });
   async function zoom(id: number, count: number, context = BACKGROUND_CONTEXT) {
     await load(context);
@@ -875,34 +958,39 @@ export function createMemory(config: MemoryConfig, models: Models) {
     )
       throw new Error(`No line ${id}+${count}`);
     if (count === 1) {
-      const leaf = leaves.get(id)!;
+      const leaf = await leafAt(id, context);
       return `${id}+0|${leaf.kind}: ${leaf.text}`;
     }
-    return [
+    const generation = index.generation ?? 0;
+    const children = [
       { start: id, count: count / 2 },
       { start: id + count / 2, count: count / 2 },
-    ]
-      .map((part) => `${key(part)}|${nodes.get(key(part))!}`)
-      .join("\n");
+    ].map(
+      async (part) =>
+        `${key(part)}|${(await nodeAt(part, context, generation)) ?? "(not summarized yet: zoom it)"}`,
+    );
+    return (await Promise.all(children)).join("\n");
   }
-  function browserSummary(part: Part) {
+  async function browserSummary(part: Part, generation: number, context = BACKGROUND_CONTEXT) {
+    const text = await nodeAt(part, context, generation);
     const summary =
-      nodes.get(key(part)) === ""
+      text === ""
         ? "(silent runtime noise excluded; original available below)"
-        : (nodes.get(key(part)) ?? "(not summarized yet: zoom it)");
+        : (text ?? "(not summarized yet: zoom it)");
     return {
       id: part.start,
       count: part.count,
       summary,
       bytes: utf8Bytes(summary),
-      startDate: leaves.get(part.start)!.date,
-      endDate: leaves.get(part.start + part.count - 1)!.date,
+      startDate: (await leafAt(part.start, context)).date,
+      endDate: (await leafAt(part.start + part.count - 1, context)).date,
     };
   }
   async function date(id: number, context = BACKGROUND_CONTEXT) {
     await load(context);
-    const leaf = leaves.get(id);
-    if (!leaf) throw new Error(`No message ${id}`);
+    if (!Number.isSafeInteger(id) || id < 0 || id >= index.count)
+      throw new Error(`No message ${id}`);
+    const leaf = await leafAt(id, context);
     return leaf.date;
   }
   async function packetForRun(runId: SubmissionId, context: Context) {
@@ -916,7 +1004,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
         if (!input.entry) throw new Error("Main run input has no entry");
         await syncTo(input.entry - 1, context);
         await settleNow(context);
-        const view = renderView(index.parts, nodes);
+        const view = renderView(overviewParts, overviewNodes);
         const candidate = {
           view,
           boundary: input.entry as number,
@@ -1039,7 +1127,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
               const candidate = {
                 view: copiedView
                   ? (copiedView.content as string)
-                  : (packet?.view ?? renderView(index.parts, nodes)),
+                  : (packet?.view ?? renderView(overviewParts, overviewNodes)),
               };
               const conversation = (await harness.conversation(api.conversationId, context))!;
               snapshot = await conversation.commit(async (tx) => {
@@ -1087,7 +1175,8 @@ export function createMemory(config: MemoryConfig, models: Models) {
   });
   return {
     extension,
-    async bind(open: Harness, root: Conversation) {
+    async bind(open: Harness, root: Conversation, treeStorage: Storage) {
+      storage = treeStorage;
       harness = open;
       main = root;
       rootSessionId = (await harness.snapshot(ProviderDoc, main.id, BACKGROUND_CONTEXT))!.sessionId;
@@ -1109,6 +1198,19 @@ export function createMemory(config: MemoryConfig, models: Models) {
         });
       };
       unsubscribe = harness.subscribeCommits((publication) => {
+        for (const change of publication.changes) {
+          if (change.type !== "document" || change.conversationId !== main.id || !change.record.key)
+            continue;
+          if (
+            change.record.kind === Leaves.definition.kind ||
+            change.record.kind === Nodes.definition.kind
+          ) {
+            const name = `${change.record.kind}:${change.record.key}`;
+            if (change.value)
+              cache.set(name, structuredClone(change.value) as MemoryLeaf | { text: string });
+            else cache.delete(name);
+          }
+        }
         const finished = publication.changes.filter(
           (change) =>
             change.type === "entry" &&
@@ -1129,9 +1231,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
       unsubscribeClose = harness.subscribeClose(() => background.cancel());
       start(cutoff);
       if (config.rebuildRequested) {
-        rebuilding = rebuildAll().catch((error) => {
-          if (!background.context.abortSignal?.aborted) report(error);
-        });
+        rebuilding = rebuildAll()
+          .finally(() => {
+            rebuilding = undefined;
+          })
+          .catch((error) => {
+            if (!background.context.abortSignal?.aborted) report(error);
+          });
       }
     },
     async contextFor(
@@ -1152,16 +1258,18 @@ export function createMemory(config: MemoryConfig, models: Models) {
         exclusive(async () => {
           await syncTo((await main.entries({}, 1, undefined, context)).items[0]?.id ?? 0, context);
           await settleNow(context);
-          return renderView(index.parts, nodes);
+          return renderView(overviewParts, overviewNodes);
         }),
         context,
       );
       return [{ role: "user", content: view, timestamp: 0 }];
     },
-    browserOverview() {
+    async browserOverview() {
+      const parts = overviewParts;
+      const generation = overviewGeneration;
       return {
-        nodes: index.parts.map(browserSummary),
-        prepared: index.viewCount,
+        nodes: await Promise.all(parts.map((part) => browserSummary(part, generation))),
+        prepared: parts.reduce((total, part) => total + part.count, 0),
         total: index.count,
       };
     },
@@ -1176,11 +1284,12 @@ export function createMemory(config: MemoryConfig, models: Models) {
         id + count > index.viewCount
       )
         throw new RangeError(`No prepared line ${id}+${count}`);
+      const generation = index.generation ?? 0;
       if (count === 1) return { children: [], text: await zoom(id, count) };
       return {
         children: [
-          browserSummary({ start: id, count: count / 2 }),
-          browserSummary({ start: id + count / 2, count: count / 2 }),
+          await browserSummary({ start: id, count: count / 2 }, generation),
+          await browserSummary({ start: id + count / 2, count: count / 2 }, generation),
         ],
       };
     },
@@ -1203,6 +1312,9 @@ export function createMemory(config: MemoryConfig, models: Models) {
         totalLeaves,
         builtLeaves,
         pending: totalLeaves - builtLeaves,
+        settled: maintenance?.settled ?? 0,
+        cacheBytes: cache.bytes,
+        cacheEntries: cache.size,
         error: lastError,
         ...(rebuildProgress ? { rebuild: rebuildProgress } : {}),
       };
@@ -1225,7 +1337,9 @@ export function createMemory(config: MemoryConfig, models: Models) {
       await serial;
     },
     async rebuild() {
-      rebuilding ??= rebuildAll();
+      rebuilding ??= rebuildAll().finally(() => {
+        rebuilding = undefined;
+      });
       return rebuilding;
     },
     sync,

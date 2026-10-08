@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vite-plus/test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -27,6 +27,7 @@ import {
   projectEntry,
   utf8Bytes,
   MemoryNodesDoc,
+  MemoryMaintenanceDoc,
   type MemoryConfig,
 } from "./memory.js";
 
@@ -78,8 +79,9 @@ test("fatal memory preparation aborts without dispatching raw canonical history"
   );
   const registry = createRegistry();
   registry.install(memory.extension);
+  const storage = new MemoryStorage();
   const harness = await Harness.open(
-    new MemoryStorage(),
+    storage,
     { models, registry, settings: { compaction: { enabled: false } } },
     context,
   );
@@ -98,7 +100,7 @@ test("fatal memory preparation aborts without dispatching raw canonical history"
       }),
     context,
   );
-  await memory.bind(harness, main);
+  await memory.bind(harness, main, storage);
   const settled = await (
     await main.submit({ type: "input", content: "new input" }, context)
   ).wait(context);
@@ -140,15 +142,16 @@ async function fixture() {
     );
     const registry = createRegistry();
     registry.install(memory.extension);
+    const storage = await openNodeSqliteStorage(join(directory, "runtime.sqlite"));
     const harness = await Harness.open(
-      await openNodeSqliteStorage(join(directory, "runtime.sqlite")),
+      storage,
       { models, registry, settings: { compaction: { enabled: false } } },
       context,
     );
     const main = await harness.root(context, {
       agent: { model: { provider: "faux", modelId: "faux-1" } },
     });
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     return { memory, harness, main, registry };
   };
   return { open, faux, models, compressions: () => compressions };
@@ -198,6 +201,8 @@ test("silent old and future turns keep IDs and originals but leave prepared memo
   const originalDate = await state.memory.date(0);
   const sourceEntries = (await state.main.entries({}, 100, undefined, context)).items;
   await state.main.commit(async (tx) => {
+    // Simulate a legacy tree created before the persistent maintenance checkpoint.
+    await tx.retireDoc(MemoryMaintenanceDoc, state.main.id);
     (await tx.doc(MemoryNodesDoc, state.main.id, "0+1", { text: "" })).text = "talk: NO_REPLY";
     (await tx.doc(MemoryNodesDoc, state.main.id, "0+2", { text: "" })).text =
       "talk: NO_REPLY; user: useful";
@@ -379,10 +384,7 @@ test("interrupted rebuild resumes persisted fresh nodes without publishing a par
   const pending = state.memory.rebuild().catch(() => undefined);
   await enteredPromise;
   expect(
-    state.memory
-      .browserOverview()
-      .nodes.map((node) => node.summary)
-      .join("\n"),
+    (await state.memory.browserOverview()).nodes.map((node) => node.summary).join("\n"),
   ).toContain("summary");
   await state.memory.close().catch(() => undefined);
   await pending;
@@ -401,6 +403,75 @@ test("interrupted rebuild resumes persisted fresh nodes without publishing a par
     (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:1+1", context))?.text,
   ).toContain("summary");
   expect(await state.memory.zoom(1, 1)).toContain("x".repeat(200));
+});
+
+test("restart resumes an unfinished ancestor from durable children", async () => {
+  const f = await fixture();
+  const cancellation = withCancel(context);
+  let state = await f.open({
+    compress: async (_, signal) => {
+      cancellation.cancel(new Error("interrupt parent"));
+      signal!.throwIfAborted();
+      return "unreachable";
+    },
+  });
+  await state.main.commit(async (tx) => {
+    for (let i = 0; i < 2; i++)
+      await tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: `${i}:${"x".repeat(50)}`, timestamp: i + 1 }],
+      });
+  }, context);
+  await expect(state.memory.prepare(cancellation.context)).rejects.toThrow("interrupt parent");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "1+1", context))?.text,
+  ).toContain("user: 1:");
+  expect(
+    await state.harness.snapshot(MemoryNodesDoc, state.main.id, "0+2", context),
+  ).toBeUndefined();
+  await state.memory.close();
+  await state.harness.close(context);
+  state = await f.open();
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  await state.memory.prepare();
+  expect(f.compressions()).toBe(1);
+  expect(await state.memory.zoom(0, 2)).toContain("user: 1:");
+  expect(state.memory.status().settled).toBe(2);
+});
+
+test("same-process retry publishes a final checkpoint cancelled after the last node", async () => {
+  const f = await fixture();
+  const cancellation = withCancel(context);
+  let armed = false;
+  const state = await f.open({
+    onProgress: () => {
+      if (armed) cancellation.cancel(new Error("cancel checkpoint"));
+    },
+  });
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "decision after checkpoint", timestamp: 1 }],
+      }),
+    context,
+  );
+  armed = true;
+  await expect(state.memory.prepare(cancellation.context)).rejects.toThrow("cancel checkpoint");
+  // All nodes are built, but publishing their view still needs to be retried.
+  expect(state.memory.status().pending).toBe(0);
+  armed = false;
+  expect(await state.memory.prepare()).toContain("decision after checkpoint");
+  expect((await state.memory.browserOverview()).nodes[0]?.summary).toContain(
+    "decision after checkpoint",
+  );
 });
 
 test("each run starts from a persisted view and the full new input, never old raw turns", async () => {

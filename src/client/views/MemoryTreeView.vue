@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { ByteCache } from "@/shared/byte-cache";
 import { getMemoryTree, expandMemoryNode } from "@/client/lib/api";
 import type { MemoryTreeNode, MemoryTreeOverview, MemoryTreeExpansion } from "@/shared/memory-tree";
 
@@ -8,7 +9,10 @@ const path = ref<MemoryTreeNode[]>([]);
 const expansion = ref<MemoryTreeExpansion>();
 const loading = ref(false);
 const error = ref("");
-const cache = new Map<string, MemoryTreeExpansion>();
+const cache = new ByteCache<MemoryTreeExpansion>(
+  512 * 1024,
+  (value) => new TextEncoder().encode(JSON.stringify(value)).length,
+);
 const heading = ref<HTMLElement>();
 const container = ref<HTMLElement>();
 
@@ -43,13 +47,27 @@ async function open(node: MemoryTreeNode) {
     loading.value = false;
   }
 }
-function back(depth: number) {
-  path.value = path.value.slice(0, depth);
-  const node = path.value.at(-1);
-  expansion.value = node ? cache.get(`${node.id}+${node.count}`) : undefined;
+async function back(depth: number) {
+  loading.value = true;
   error.value = "";
-  heading.value?.focus();
-  container.value?.scrollTo(0, 0);
+  try {
+    const next = path.value.slice(0, depth);
+    const node = next.at(-1);
+    let result: MemoryTreeExpansion | undefined;
+    if (node) {
+      const key = `${node.id}+${node.count}`;
+      result = cache.get(key) ?? (await expandMemoryNode(node.id, node.count));
+      cache.set(key, result);
+    }
+    path.value = next;
+    expansion.value = result;
+    heading.value?.focus();
+    container.value?.scrollTo(0, 0);
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : String(failure);
+  } finally {
+    loading.value = false;
+  }
 }
 onMounted(load);
 </script>

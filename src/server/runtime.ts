@@ -237,7 +237,7 @@ export class Runtime {
       ...(orchestration.extension.tools ?? []),
       ...(memory.extension.tools ?? []),
     ]);
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     const streamSimple = models.streamSimple.bind(models);
     models.streamSimple = (model, request, options) => {
       memory.validateRequest(request, options);

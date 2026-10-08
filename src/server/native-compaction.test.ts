@@ -38,8 +38,9 @@ async function fixture() {
     const memory = createMemory({ nodeBytes: 100_000, viewBytes: 200_000 }, models);
     const registry = createRegistry();
     registry.install(memory.extension);
+    const storage = await openNodeSqliteStorage(join(directory, "runtime.sqlite"));
     const harness = await Harness.open(
-      await openNodeSqliteStorage(join(directory, "runtime.sqlite")),
+      storage,
       {
         models,
         registry,
@@ -57,7 +58,7 @@ async function fixture() {
     const main = await harness.root(context, {
       agent: { model: { provider: "faux", modelId: "tiny" } },
     });
-    await memory.bind(harness, main);
+    await memory.bind(harness, main, storage);
     let closed = false;
     const close = async () => {
       if (closed) return;
