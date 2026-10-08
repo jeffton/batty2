@@ -82,7 +82,7 @@ function transactionDone(
     };
   });
 }
-window.addEventListener("pagehide", () => {
+function releaseConnection(): void {
   const pending = database;
   database = undefined;
   // close() lets already-issued transactions complete but releases the connection
@@ -91,8 +91,23 @@ window.addEventListener("pagehide", () => {
     (db) => db.close(),
     () => {},
   );
-});
-function open(): Promise<IDBDatabase> {
+}
+window.addEventListener("pagehide", releaseConnection);
+// Switching iOS apps can suspend the storage process without pagehide. Drop the
+// connection on both transitions: foreground is also a boundary when WebKit
+// delivered no background event before suspension. In-flight requests still
+// settle normally, and their errors remain visible to callers.
+document.addEventListener("visibilitychange", releaseConnection);
+async function open(): Promise<IDBDatabase> {
+  for (;;) {
+    const pending = openConnection();
+    const db = await pending;
+    // Visibility can revoke an open that has not delivered its success event
+    // yet. Never hand that closing connection to a new transaction.
+    if (database === pending) return db;
+  }
+}
+function openConnection(): Promise<IDBDatabase> {
   if (database) return database;
   const pending = new Promise<IDBDatabase>((resolve, reject) => {
     const operation = indexedDB.open(DB_NAME, 1);

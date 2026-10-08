@@ -450,3 +450,75 @@ test.each(["Chromium", "WebKit"])(
     await page.close();
   },
 );
+
+test.each(["Chromium", "WebKit"])(
+  "%s resumes without pagehide and rejects an open revoked before success",
+  async (engine) => {
+    const page = await fixture(engine === "WebKit" ? safari : browser);
+    const result = await evaluate(page, async () => {
+      const c = (window as any).cache;
+      const bootstrap = { cacheScope: "visibility", cacheExpiresAt: Date.now() + 60_000 };
+      const session = {
+        id: "1",
+        sessionId: "1",
+        streamId: "a",
+        revision: 1,
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            timestamp: Date.now(),
+            blocks: [{ type: "text", text: "retained across suspension" }],
+          },
+        ],
+        activeTools: [],
+      };
+      const nativeOpen = IDBFactory.prototype.open;
+      let connection: IDBDatabase | undefined;
+      let opens = 0;
+      let revokeOnSuccess = false;
+      IDBFactory.prototype.open = function (...args) {
+        opens += 1;
+        const operation = nativeOpen.apply(this, args);
+        operation.addEventListener("success", () => {
+          connection = operation.result;
+          if (revokeOnSuccess) {
+            revokeOnSuccess = false;
+            document.dispatchEvent(new Event("visibilitychange"));
+          }
+        });
+        return operation;
+      };
+      await c.saveMainCache(bootstrap, session);
+      const stale = connection!;
+      // Model storage-process eviction with no close/pagehide event. Reusing
+      // this real, closed connection would fail at transaction creation.
+      stale.close();
+      document.dispatchEvent(new Event("visibilitychange"));
+      revokeOnSuccess = true;
+      await c.saveMainCache(bootstrap, { ...session, revision: 2 });
+      const restored = await c.readMainCache();
+      const opensAfterResume = opens;
+      // A delayed close event from the old owner must not evict its replacement.
+      stale.dispatchEvent(new Event("close"));
+      await c.saveMainCache(bootstrap, { ...session, revision: 3 });
+      const final = await c.readMainCache();
+      IDBFactory.prototype.open = nativeOpen;
+      return {
+        opensAfterResume,
+        opens,
+        revision: restored.session.revision,
+        finalRevision: final.session.revision,
+        text: final.session.messages[0].blocks[0].text,
+      };
+    });
+    expect(result).toEqual({
+      opensAfterResume: 3,
+      opens: 3,
+      revision: 2,
+      finalRevision: 3,
+      text: "retained across suspension",
+    });
+    await page.close();
+  },
+);
