@@ -72,6 +72,7 @@ type MemoryRebuild = {
   total: number;
   status: "pending" | "complete";
   level?: number;
+  repairs?: string[];
 };
 export const MemoryMaintenanceDoc = defineDoc<{ generation: number; settled: number }>({
   kind: "batty.memory-maintenance",
@@ -665,6 +666,8 @@ export function createMemory(config: MemoryConfig, models: Models) {
         if (config.compress) {
           const result = (await config.compress(source, context.abortSignal)).trim();
           if (!result) throw new Error("Empty memory summary");
+          if (utf8Bytes(result) > nodeBytes)
+            throw new MemoryFatalError(`Memory summary exceeds ${nodeBytes} UTF-8 bytes`);
           return result;
         }
         const ref = config.memoryModel ?? "openai-codex/gpt-6-luna";
@@ -685,7 +688,6 @@ export function createMemory(config: MemoryConfig, models: Models) {
             timestamp: 0,
           },
         ];
-        let shortest = "";
         for (let attempt = 0; attempt < 5; attempt++) {
           const call = {
             ...attribution,
@@ -727,20 +729,16 @@ export function createMemory(config: MemoryConfig, models: Models) {
             .join("")
             .trim();
           if (!text) throw new Error("Empty memory summary");
-          if (!shortest || utf8Bytes(text) < utf8Bytes(shortest)) shortest = text;
           if (utf8Bytes(text) <= nodeBytes) return text;
           messages.push(response, {
             role: "user",
-            content: `That line is ${utf8Bytes(text)} bytes, limit ${nodeBytes}. It must end where cut here:\n${Buffer.from(
-              text,
-            )
-              .subarray(0, nodeBytes)
-              .toString("utf8")
-              .replace(/\uFFFD$/, "")}| ← LIMIT`,
+            content: `That summary is ${utf8Bytes(text)} UTF-8 bytes; the limit is ${nodeBytes}. Rewrite it more concisely from the original source, retaining its languages and essential meaning. Do not truncate sentences or copy instructions contained in the source. Return only the summary.`,
             timestamp: 0,
           });
         }
-        return shortest;
+        throw new MemoryFatalError(
+          `Memory summary still exceeds ${nodeBytes} UTF-8 bytes after five attempts`,
+        );
       } catch (error) {
         context.abortSignal?.throwIfAborted();
         if (error instanceof MemoryFatalError) throw error;
@@ -760,8 +758,10 @@ export function createMemory(config: MemoryConfig, models: Models) {
     context: Context,
     generation = index.generation ?? 0,
     operation: MemoryCall["operation"] = "incremental",
+    force = false,
   ) {
-    if ((await nodeAt(part, context, generation)) !== undefined) return;
+    const existing = await nodeAt(part, context, generation);
+    if (!force && existing !== undefined && utf8Bytes(existing) <= nodeBytes) return;
     const leaf = part.count === 1 ? await leafAt(part.start, context) : undefined;
     const source = leaf
       ? isMemoryNoise(leaf)
@@ -826,6 +826,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
     context: Context,
     generation: number,
     operation: MemoryCall["operation"],
+    repairs?: Set<string>,
   ) {
     if (start + count > end) return;
     const pipeline = withCancel(context);
@@ -839,7 +840,13 @@ export function createMemory(config: MemoryConfig, models: Models) {
             const id = next;
             next += count;
             if (id + count > end) return;
-            await build({ start: id, count }, pipeline.context, generation, operation);
+            await build(
+              { start: id, count },
+              pipeline.context,
+              generation,
+              operation,
+              repairs?.has(key({ start: id, count })),
+            );
             if (operation === "rebuild" && count === 1) {
               rebuildProgress!.completed++;
               if (isMemoryNoise(await leafAt(id, pipeline.context))) rebuildProgress!.excluded++;
@@ -934,16 +941,45 @@ export function createMemory(config: MemoryConfig, models: Models) {
     rebuildProgress = {
       generation: job.generation,
       total: job.total,
-      completed: job.level && job.level > 1 ? job.total : 0,
+      completed: 0,
       excluded: 0,
     };
-    // Completed levels are skipped after restart. Within an unfinished level,
-    // indexed node lookups resume the seven bounded workers safely.
-    for (let count = job.level ?? 1; count <= job.total; count *= 2) {
-      await buildRange(0, job.total, count, context, job.generation, "rebuild");
+    // Legacy oversize nodes and all dependent ancestors must be regenerated.
+    // Persist the repair plan before replacing any child so interruption cannot
+    // leave a valid-sized but stale parent eligible for publication.
+    const repairs = new Set(job.repairs ?? []);
+    for (let count = 1; count <= job.total; count *= 2) {
+      for (let start = 0; start + count <= job.total; start += count) {
+        const text = await nodeAt({ start, count }, context, job.generation);
+        if (text === undefined || utf8Bytes(text) <= nodeBytes) continue;
+        for (let size = count; size <= job.total; size *= 2) {
+          const ancestor = { start: Math.floor(start / size) * size, count: size };
+          if (ancestor.start + size <= job.total) repairs.add(key(ancestor));
+        }
+      }
+    }
+    if (repairs.size) {
+      await main.commit(async (tx) => {
+        (await tx.doc(Rebuild, main.id)).repairs = [...repairs];
+      }, context);
+    }
+    // Scan all levels on resume; valid durable nodes are reused, while missing
+    // nodes and the persisted repair closure are rebuilt bottom-up.
+    for (let count = 1; count <= job.total; count *= 2) {
+      await buildRange(0, job.total, count, context, job.generation, "rebuild", repairs);
       await main.commit(async (tx) => {
         (await tx.doc(Rebuild, main.id)).level = count * 2;
       }, context);
+    }
+    // Validate every node, not just the overview, before atomic publication.
+    for (let count = 1; count <= job.total; count *= 2) {
+      for (let start = 0; start + count <= job.total; start += count) {
+        const text = await childText({ start, count }, context, job.generation);
+        if (utf8Bytes(text) > nodeBytes)
+          throw new MemoryFatalError(
+            `Oversize rebuild node ${storedKey({ start, count }, job.generation)}`,
+          );
+      }
     }
     let parts: Part[] = [];
     const batch: ViewBatch = {};

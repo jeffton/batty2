@@ -17,6 +17,7 @@ import {
   ProviderDoc,
   MemoryStorage,
   defineExtension,
+  defineDoc,
   defineTool,
   type EntryRecord,
 } from "@earendil-works/pi-durable";
@@ -189,7 +190,7 @@ async function fixture() {
         viewBytes: 100,
         compress: async (source) => {
           compressions++;
-          return `summary ${source.slice(0, 45)}`;
+          return `summary ${source.slice(0, 30)}`;
         },
         ...options,
       },
@@ -394,6 +395,103 @@ test("full rebuild derives a fresh generation only from originals, preserves IDs
   expect(
     (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:4+1", context))?.text,
   ).toContain("new decision");
+});
+
+test("resume repairs oversize UTF-8 nodes and their valid-sized ancestors despite completed levels", async () => {
+  const f = await fixture();
+  let state = await f.open({
+    compress: async (source) =>
+      source.includes("valid child") ? "ø".repeat(41) : `repaired child ${"x".repeat(60)}`,
+  });
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  await state.main.commit(async (tx) => {
+    for (let i = 0; i < 2; i++)
+      await tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: `decision ${i} ${"x".repeat(100)}`, timestamp: i }],
+      });
+  }, context);
+  await state.memory.prepare();
+  const original = await state.memory.zoom(0, 1);
+  const rebuild = defineDoc<{
+    generation: number;
+    total: number;
+    status: "pending" | "complete";
+    level?: number;
+  }>({
+    kind: "batty.memory-rebuild",
+    version: 1,
+    scope: "conversation",
+    history: "latest",
+    fork: "initial",
+    initial: () => ({ generation: 0, total: 0, status: "complete" }),
+  });
+  await state.main.commit(async (tx) => {
+    Object.assign(await tx.doc(rebuild, state.main.id), {
+      generation: 1,
+      total: 2,
+      status: "pending",
+      level: 4,
+    });
+    (await tx.doc(MemoryNodesDoc, state.main.id, "g1:0+1", { text: "" })).text = "ø".repeat(50);
+    (await tx.doc(MemoryNodesDoc, state.main.id, "g1:1+1", { text: "" })).text = "valid child";
+    (await tx.doc(MemoryNodesDoc, state.main.id, "g1:0+2", { text: "" })).text = "STALE PARENT";
+  }, context);
+  await expect(state.memory.rebuild()).rejects.toThrow("exceeds 80 UTF-8 bytes");
+  expect(
+    (await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context))?.text,
+  ).toBe(`repaired child ${"x".repeat(60)}`);
+  expect(
+    (await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation,
+  ).toBeUndefined();
+  await state.memory.close();
+  await state.harness.close(context);
+  state = await f.open();
+  await state.memory.rebuild();
+  expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation).toBe(
+    1,
+  );
+  for (const key of ["g1:0+1", "g1:1+1", "g1:0+2"]) {
+    const node = await state.harness.snapshot(MemoryNodesDoc, state.main.id, key, context);
+    expect(utf8Bytes(node!.text)).toBeLessThanOrEqual(80);
+    expect(node!.text).not.toContain("STALE PARENT");
+  }
+  expect(await state.memory.zoom(0, 1)).toBe(original);
+});
+
+test("oversize custom compression leaves rebuild pending and old generation active", async () => {
+  const f = await fixture();
+  let fail = false;
+  const state = await f.open({ compress: async () => (fail ? "ø".repeat(41) : "valid summary") });
+  cleanup.push(async () => {
+    await state.memory.close();
+    await state.harness.close(context);
+  });
+  await state.main.commit(
+    (tx) =>
+      tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "source ".repeat(30), timestamp: 1 }],
+      }),
+    context,
+  );
+  await state.memory.prepare();
+  fail = true;
+  await expect(state.memory.rebuild()).rejects.toThrow("exceeds 80 UTF-8 bytes");
+  expect(
+    (await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation,
+  ).toBeUndefined();
+  expect(
+    await state.harness.snapshot(MemoryNodesDoc, state.main.id, "g1:0+1", context),
+  ).toBeUndefined();
+  fail = false;
+  await state.memory.rebuild();
+  expect((await state.harness.snapshot(MemoryIndexDoc, state.main.id, context))?.generation).toBe(
+    1,
+  );
 });
 
 test("generation publication includes originals admitted while rebuilding and survives reopen", async () => {
