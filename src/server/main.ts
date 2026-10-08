@@ -240,7 +240,7 @@ app.get<{ Params: { workspaceId: string } }>(
     return (
       await runtime.orchestration.listRunLogs(undefined, 100, request.params.workspaceId)
     ).map((run) => {
-      const job = jobs.find((item) => item.id === run.jobId);
+      const job = jobs.find((item) => item.id === run.jobId) ?? run.job;
       return {
         runId: run.id,
         jobId: run.jobId,

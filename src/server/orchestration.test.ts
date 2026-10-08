@@ -22,8 +22,9 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type, getCurrentTools } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createOrchestration, OrchestrationDoc } from "./orchestration.js";
+import { createOrchestration, OrchestrationDoc, type CronRun } from "./orchestration.js";
 import { orchestrationHistory } from "./orchestration-test-history";
+import { indexRun } from "./orchestration-history";
 import { decodeRuntimeNotice } from "./runtime-notices.js";
 import { registerPushCompletions } from "./push-completions.js";
 import type { Runtime } from "./runtime.js";
@@ -308,6 +309,99 @@ test.each(["complete", "cancel", "restart"] as const)(
   15000,
 );
 
+test("reopen retires only completed unchanged one-shots and preserves archived metadata", async () => {
+  const state = await fixture();
+  let { harness, main } = await state.open();
+  const now = Date.now();
+  const cases = [
+    "completed",
+    "failed",
+    "aborted",
+    "unexecuted",
+    "recurring",
+    "edited",
+    "rearmed",
+    "latest-failed",
+    "active",
+  ];
+  for (const id of cases) {
+    await state.orchestration.importJob({
+      id,
+      workspaceId: "test",
+      prompt: `original ${id}`,
+      enabled: false,
+      schedule:
+        id === "recurring"
+          ? { kind: "every", every: "1h", everyMs: 3600000 }
+          : { kind: "at", at: new Date(now - 10000).toISOString() },
+      session: { kind: "main-detached" },
+      createdAt: now - 20000,
+      updatedAt: id === "edited" ? now : now - 20000,
+      ...(id === "rearmed" ? { nextAt: now + 3600000 } : {}),
+    });
+    if (id === "unexecuted") continue;
+    await main.commit(async (tx) => {
+      const run = {
+        id: `${id}:old`,
+        jobId: id,
+        workspaceId: "test",
+        scheduledAt: now - 10000,
+        startedAt: now - 9000,
+        finishedAt: now - 8000,
+        taskId: 1 as never,
+        sessionId: String(main.id),
+        status: (id === "failed" ? "failed" : id === "aborted" ? "aborted" : "completed") as
+          | "completed"
+          | "failed"
+          | "aborted",
+        output: "retained output",
+      };
+      if (id === "completed")
+        await indexRun(tx, {
+          ...run,
+          id: `${id}:earlier-failure`,
+          startedAt: now - 15000,
+          finishedAt: now - 14000,
+          status: "failed",
+        });
+      await indexRun(tx, run);
+      if (id === "active") {
+        const active: CronRun = { ...run, id: `${id}:running`, status: "running" };
+        delete active.finishedAt;
+        await indexRun(tx, active);
+        (await tx.doc(OrchestrationDoc)).runs[active.id] = active;
+      }
+      if (id === "latest-failed")
+        await indexRun(tx, {
+          ...run,
+          id: `${id}:new`,
+          startedAt: now - 7000,
+          finishedAt: now - 6000,
+          status: "failed",
+        });
+    }, context);
+  }
+  await harness.close(context);
+  ({ harness, main } = await state.open());
+  expect((await state.orchestration.listJobs()).map((job) => job.id)).toEqual(cases.slice(1));
+  expect((await state.orchestration.listRunLogs("active"))[1]?.job?.prompt).toBe("original active");
+  const [run] = await state.orchestration.listRunLogs("completed");
+  expect(run).toMatchObject({
+    status: "completed",
+    output: "retained output",
+    job: { prompt: "original completed", session: { kind: "main-detached" } },
+  });
+  await harness.close(context);
+  await state.open();
+  const retainedRuns = await state.orchestration.listRunLogs("completed");
+  expect(retainedRuns).toHaveLength(2);
+  expect(retainedRuns[1]).toMatchObject({
+    status: "failed",
+    output: "retained output",
+    job: { prompt: "original completed", session: { kind: "main-detached" } },
+  });
+});
+
 test("a persisted cron admission survives reopen and reports exactly once to main", async () => {
   const fixtureState = await fixture();
   let { harness, main } = await fixtureState.open();
@@ -393,6 +487,10 @@ test.each(
     const run = (await orchestration.listRunLogs(job.id))[0]!;
     expect(run.status).toBe(output === "error" ? "failed" : "completed");
     expect(run.finishedAt).toBeDefined();
+    expect((await orchestration.listJobs()).some((item) => item.id === job.id)).toBe(
+      output === "error",
+    );
+    expect(run.job?.prompt).toBe("scheduled task");
     expect((await harness.getTask(run.taskId, context))!.state.outcome?.status).toBe("completed");
     if (output === "error") expect(run.output).toBe(`Task ${run.sessionId} failed: model_error`);
     else expect(run.output).toBe(output);

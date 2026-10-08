@@ -133,7 +133,23 @@ export type CronRun = {
   status: "running" | "completed" | "failed" | "aborted";
   finishedAt?: number;
   output?: string;
+  job?: CronJob;
 };
+
+function removeCompletedOneShot(jobs: Record<string, CronJob>, run: CronRun) {
+  const job = jobs[run.jobId];
+  if (
+    job?.schedule.kind === "at" &&
+    !job.enabled &&
+    job.nextAt === undefined &&
+    job.updatedAt <= run.startedAt &&
+    run.status === "completed" &&
+    run.finishedAt !== undefined
+  ) {
+    run.job ??= JSON.parse(JSON.stringify(job)) as CronJob;
+    delete jobs[job.id];
+  }
+}
 /** Session-wide worker registry; subagent results belong to their spawning parent. */
 export const OrchestrationDoc = defineDoc<{
   mainId?: ConversationId;
@@ -692,6 +708,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             run.status = failed ? "failed" : "completed";
             run.finishedAt = runtime.now();
             run.output = text;
+            removeCompletedOneShot(doc.jobs, run);
             Object.assign(await tx.doc(ArchivedRun, run.id, run), run);
             delete doc.runs[run.id];
           }
@@ -1062,6 +1079,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           await restoreInlineAgent(tx, main.id, doc.inlineContext);
           delete doc.inlineContext;
         }
+        removeCompletedOneShot(doc.jobs, current);
         Object.assign(await tx.doc(ArchivedRun, current.id, current), current);
         delete doc.runs[current.id];
         await archiveWorker(tx, current.sessionId, current.taskId);
@@ -1153,6 +1171,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
             taskId,
             sessionId: String(child),
             status: "running",
+            job: structuredClone(job),
           };
           await indexRun(tx, doc.runs[runId]!);
           current.nextAt =
@@ -1162,7 +1181,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
                   current.schedule.everyMs
               : nextAt(current.schedule, now);
           delete current.retryAt;
-          if (current.schedule.kind === "at") current.enabled = false;
+          if (current.schedule.kind === "at") {
+            current.enabled = false;
+            delete current.nextAt;
+          }
         }, context);
         harness.resume();
       } catch (error) {
@@ -1558,6 +1580,28 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           doc.archived = true;
         }
       }, context);
+      // Retire historical successful one-shots using the latest archived run,
+      // never merely because a definition is paused or its deadline has passed.
+      for (const job of await listJobs()) {
+        if (job.schedule.kind !== "at" || job.enabled || job.nextAt !== undefined) continue;
+        const runs = await listRunLogs(job.id, Infinity);
+        const [run] = runs;
+        if (!run) continue;
+        await main.commit(async (tx) => {
+          const doc = await tx.doc(OrchestrationDoc);
+          const current = doc.jobs[job.id];
+          if (!current || JSON.stringify(current) !== JSON.stringify(job)) return;
+          // Preserve every legacy run's display metadata, including earlier failures.
+          // Failed one-shots may succeed on a later explicitly requested run.
+          for (const historical of runs) {
+            const archived = await tx.doc(ArchivedRun, historical.id, historical);
+            archived.job ??= structuredClone(job);
+          }
+          if (Object.values(doc.runs).some((active) => active.jobId === job.id)) return;
+          removeCompletedOneShot(doc.jobs, run);
+          Object.assign(await tx.doc(ArchivedRun, run.id, run), run);
+        }, context);
+      }
       await tick();
       await arm();
     },
