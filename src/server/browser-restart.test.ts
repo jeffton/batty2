@@ -7,6 +7,81 @@ import http from "node:http";
 import { once } from "node:events";
 import { BrowserService } from "./browser-service";
 import { browserSessionDirectory } from "./browser-persistence";
+import { WORKER_BROWSER_RETENTION_MS } from "./browser-worker-cleanup";
+
+test("worker idle retention survives restart and resets for a resumed task, while explicit stop closes it", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-retention-"));
+  const server = http.createServer((_, response) =>
+    response.end("<html><body>Retention</body></html>"),
+  );
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  let service = new BrowserService(undefined, 4, root);
+  const idle =
+    (taskId: string, since: number, stopped = false) =>
+    async () => ({ taskId, since, stopped });
+  try {
+    await service.execute("worker", { action: "open", url });
+    await service.execute("worker", { action: "evaluate", script: "globalThis.retained = 42" });
+    await service.expireWorkerSession(
+      "worker",
+      idle("first", 1_000),
+      WORKER_BROWSER_RETENTION_MS,
+      1_000,
+    );
+    await service.dispose();
+    service = new BrowserService(undefined, 4, root);
+    await service.expireWorkerSession(
+      "worker",
+      idle("first", 9_000),
+      WORKER_BROWSER_RETENTION_MS,
+      2_000,
+    );
+    expect(
+      (await service.execute("worker", { action: "evaluate", script: "globalThis.retained" })).text,
+    ).toContain("42");
+    // A resumed run is active, so even an overdue old receipt cannot close its browser.
+    await service.expireWorkerSession(
+      "worker",
+      async () => undefined,
+      WORKER_BROWSER_RETENTION_MS,
+      5_000_000,
+    );
+    expect(await service.hasSession("worker")).toBe(true);
+    // Completion of the resumed task gets its own full retention window.
+    await service.expireWorkerSession(
+      "worker",
+      idle("second", 5_000_000),
+      WORKER_BROWSER_RETENTION_MS,
+      5_000_000,
+    );
+    expect(await service.hasSession("worker")).toBe(true);
+    await service.expireWorkerSession(
+      "worker",
+      idle("second", 6_000_000),
+      WORKER_BROWSER_RETENTION_MS,
+      5_000_000 + WORKER_BROWSER_RETENTION_MS,
+    );
+    expect(await service.hasSession("worker")).toBe(false);
+    await service.execute("worker", { action: "open", url });
+    await service.expireWorkerSession(
+      "worker",
+      idle("stopped", 9_000_000, true),
+      WORKER_BROWSER_RETENTION_MS,
+      9_000_000,
+    );
+    expect(await service.hasSession("worker")).toBe(false);
+  } finally {
+    await service.closeSession("worker");
+    await service.dispose();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("browser service detach/reconnect preserves tabs, cookies, JavaScript state and tab/frame IDs", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-restart-"));

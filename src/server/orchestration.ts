@@ -349,6 +349,11 @@ type DeliveryState =
       artifacts?: AgentTurnArtifacts;
     };
 
+export interface WorkerBrowserLifecycle {
+  admit<T>(id: string, operation: () => Promise<T>): Promise<T>;
+  stop(id: string, taskId: string): Promise<void>;
+}
+
 export function createOrchestration(input: OrchestrationConfig | AppConfig = {}) {
   const options: OrchestrationConfig =
     "workspacesRoots" in input ? { config: input, workspaces: () => listWorkspaces(input) } : input;
@@ -356,6 +361,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   let main: Conversation;
   let contextFor = options.contextFor;
   let prepareAgent = options.prepareAgent;
+  let browserLifecycle: WorkerBrowserLifecycle | undefined;
   const preparedContext = async (
     parentId: ConversationId,
     mode: ContextMode,
@@ -961,8 +967,16 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         const live: TaskId<string>[] = [];
         for (const id of candidates)
           if ((await api.getTask(id, ctx))?.state.status !== "terminal") live.push(id);
-        const targets = await api.memo("batty.stop", live, ctx);
-        for (const target of [...targets].reverse()) await harness.abortTask(target, ctx);
+        const stop = await api.memo(
+          "batty.stop",
+          {
+            targets: live,
+            browserTask: worker!.active === undefined ? null : String(worker!.active),
+          },
+          ctx,
+        );
+        for (const target of [...stop.targets].reverse()) await harness.abortTask(target, ctx);
+        if (stop.browserTask !== null) await browserLifecycle?.stop(workerId!, stop.browserTask);
         return reply(`Stopped. Session ID: ${workerId}`);
       }
       if (!args.prompt?.trim()) throw new Error(`${args.action} requires prompt`);
@@ -988,70 +1002,79 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const isAsync =
         api.conversationId === state!.mainId || args.action === "queue" || args.async === true;
       const change = modelChange(args.model, args.effort);
-      const result = await api.commit(async (tx) => {
-        const doc = await tx.doc(OrchestrationDoc);
-        const call = await tx.doc(DeliveryRecord, String(api.taskId), {});
-        const prior = call.call;
-        if (prior) return { ...prior };
-        if (args.sessionId && !doc.workers[args.sessionId]) {
-          doc.workers[args.sessionId] = {
-            ...(await tx.doc(ArchivedWorker, args.sessionId, worker!)),
+      const admit = () =>
+        api.commit(async (tx) => {
+          const doc = await tx.doc(OrchestrationDoc);
+          const call = await tx.doc(DeliveryRecord, String(api.taskId), {});
+          const prior = call.call;
+          if (prior) return { ...prior };
+          if (args.sessionId && !doc.workers[args.sessionId]) {
+            doc.workers[args.sessionId] = {
+              ...(await tx.doc(ArchivedWorker, args.sessionId, worker!)),
+            };
+          }
+          const currentWorker = args.sessionId ? doc.workers[args.sessionId] : undefined;
+          const currentTask =
+            currentWorker?.active === undefined ? undefined : await tx.task(currentWorker.active);
+          const currentlyRunning =
+            currentTask !== undefined && currentTask.state.status !== "terminal";
+          if (args.action === "resume" && currentlyRunning)
+            throw new Error("Subagent is running; use queue or steer");
+          if (args.action === "queue" && !currentlyRunning)
+            throw new Error("Subagent is finished; use resume");
+          let child = currentWorker?.id;
+          if (child === undefined) {
+            const owner = isAsync
+              ? await tx.createTask(Anchor, null, {
+                  ownership: { kind: "conversation" },
+                  background: true,
+                })
+              : api.taskId;
+            child = await createWorker(
+              tx,
+              owner,
+              api.conversationId,
+              ws,
+              args.prompt!,
+              inherited,
+              change,
+              prefix,
+            );
+          }
+          const id = String(child);
+          const input: DeliveryInput = {
+            workerId: id,
+            childId: child,
+            mainId: doc.mainId!,
+            prompt: args.prompt!,
+            notice: buildSubagentRuntimeNotice(
+              0,
+              args.prompt!,
+              args.includePreviousContext ?? false,
+            ),
+            report: isAsync,
+            change: { ...change, cwd: ws.path } as RunChange,
+            workspaceId: ws.id,
           };
-        }
-        const currentWorker = args.sessionId ? doc.workers[args.sessionId] : undefined;
-        const currentTask =
-          currentWorker?.active === undefined ? undefined : await tx.task(currentWorker.active);
-        const currentlyRunning =
-          currentTask !== undefined && currentTask.state.status !== "terminal";
-        if (args.action === "resume" && currentlyRunning)
-          throw new Error("Subagent is running; use queue or steer");
-        if (args.action === "queue" && !currentlyRunning)
-          throw new Error("Subagent is finished; use resume");
-        let child = currentWorker?.id;
-        if (child === undefined) {
-          const owner = isAsync
-            ? await tx.createTask(Anchor, null, {
-                ownership: { kind: "conversation" },
-                background: true,
-              })
-            : api.taskId;
-          child = await createWorker(
-            tx,
-            owner,
-            api.conversationId,
-            ws,
-            args.prompt!,
-            inherited,
-            change,
-            prefix,
+          if (args.action === "queue" && currentWorker?.active !== undefined)
+            input.previous = currentWorker.active;
+          const taskId = await tx.createTask(
+            Delivery,
+            input,
+            isAsync
+              ? { ownership: { kind: "conversation" }, background: true }
+              : { ownership: { kind: "task", taskId: api.taskId } },
           );
-        }
-        const id = String(child);
-        const input: DeliveryInput = {
-          workerId: id,
-          childId: child,
-          mainId: doc.mainId!,
-          prompt: args.prompt!,
-          notice: buildSubagentRuntimeNotice(0, args.prompt!, args.includePreviousContext ?? false),
-          report: isAsync,
-          change: { ...change, cwd: ws.path } as RunChange,
-          workspaceId: ws.id,
-        };
-        if (args.action === "queue" && currentWorker?.active !== undefined)
-          input.previous = currentWorker.active;
-        const taskId = await tx.createTask(
-          Delivery,
-          input,
-          isAsync
-            ? { ownership: { kind: "conversation" }, background: true }
-            : { ownership: { kind: "task", taskId: api.taskId } },
-        );
-        doc.workers[id]!.active = taskId;
-        doc.workers[id]!.startedAtMs = Date.now();
-        doc.calls[String(api.taskId)] = { workerId: id, taskId };
-        call.call = { workerId: id, taskId };
-        return { workerId: id, taskId };
-      }, ctx);
+          doc.workers[id]!.active = taskId;
+          doc.workers[id]!.startedAtMs = Date.now();
+          doc.calls[String(api.taskId)] = { workerId: id, taskId };
+          call.call = { workerId: id, taskId };
+          return { workerId: id, taskId };
+        }, ctx);
+      const result =
+        args.sessionId && browserLifecycle
+          ? await browserLifecycle.admit(args.sessionId, admit)
+          : await admit();
       await api.details(
         {
           conversationId: Number(result.workerId),
@@ -1602,6 +1625,9 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   });
   return {
     extension,
+    setWorkerBrowserLifecycle(lifecycle: WorkerBrowserLifecycle) {
+      browserLifecycle = lifecycle;
+    },
     setContextProvider(provider: ContextProvider) {
       contextFor = provider;
     },

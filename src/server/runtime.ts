@@ -41,6 +41,7 @@ import { conversationPolicy } from "./conversation-policy";
 import { ProviderAuthService } from "./provider-auth";
 import { ProviderUsageService } from "./provider-usage";
 import { createTools } from "./tools";
+import { createWorkerBrowserCleanup } from "./browser-worker-cleanup";
 import { createOrchestration } from "./orchestration";
 import { createMemory, type MemoryConfig } from "./memory";
 import { createResources } from "./resources";
@@ -136,6 +137,7 @@ export async function historyPage(
 export class Runtime {
   readonly streamId = randomUUID();
   private revision = 0;
+  private readonly workerBrowserCleanup: ReturnType<typeof createWorkerBrowserCleanup>;
   private constructor(
     readonly config: AppConfig,
     readonly models: ModelRuntime,
@@ -149,7 +151,14 @@ export class Runtime {
     readonly providerAuth: ProviderAuthService,
     readonly providerUsage: ProviderUsageService,
     private readonly historyIndex: Awaited<ReturnType<typeof createHistoryIndex>>,
-  ) {}
+  ) {
+    this.workerBrowserCleanup = createWorkerBrowserCleanup(tools.browserService);
+    orchestration.setWorkerBrowserLifecycle({
+      admit: (id, operation) => tools.browserService.withSessionLifecycle(id, operation),
+      stop: (id, taskId) =>
+        this.workerBrowserCleanup.stop(harness, Number(id) as ConversationId, taskId),
+    });
+  }
 
   static async open(
     config: AppConfig,
@@ -271,6 +280,7 @@ export class Runtime {
     );
     // bind() admits due cron jobs and can resume the harness itself. Install
     // completion observers before that startup boundary, not only before resume.
+    await runtime.workerBrowserCleanup.bind(harness);
     await beforeStart?.(runtime);
     await orchestration.bind(harness, main);
     if (resume) harness.resume();
@@ -498,6 +508,7 @@ export class Runtime {
   async close(): Promise<void> {
     await this.orchestration.close();
     await this.providerAuth.dispose();
+    await this.workerBrowserCleanup.close();
     await this.harness.close(context);
     await this.memory.close();
     await this.tools.close();

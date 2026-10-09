@@ -99,6 +99,76 @@ async function fixture(tokensPerSecond = 10000, onError: (error: unknown) => voi
   return { faux, orchestration, open, registry, directory };
 }
 
+test("stopping an already completed worker closes its retained browser; resume admission is serialized", async () => {
+  const { faux, orchestration, open } = await fixture();
+  const { harness, main } = await open();
+  const stop = vi.fn(async () => {});
+  const admit = vi.fn();
+  orchestration.setWorkerBrowserLifecycle({
+    admit: async (id, operation) => {
+      admit(id);
+      return operation();
+    },
+    stop,
+  });
+  let workerId = "";
+  faux.setResponses(
+    Array.from({ length: 20 }, () => (request) => {
+      const last = request.messages.findLast((message) => message.role !== "system")!;
+      const text = typeof last.content === "string" ? last.content : JSON.stringify(last.content);
+      if (last.role === "user" && text.includes("launch idle browser"))
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("subagent", {
+              action: "run",
+              prompt: "finish browser worker",
+              async: true,
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("stop idle browser"))
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("subagent", {
+              action: "stop",
+              sessionId: workerId,
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
+      if (last.role === "user" && text.includes("resume idle browser"))
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("subagent", {
+              action: "resume",
+              sessionId: workerId,
+              prompt: "finish resumed browser",
+              async: true,
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
+      return fauxAssistantMessage([fauxText("finished")]);
+    }),
+  );
+  harness.resume();
+  await (
+    await main.submit({ type: "input", content: "launch idle browser" }, context)
+  ).wait(context);
+  await until(async () => (await orchestration.listRunning()).length === 0);
+  const history = await orchestrationHistory(harness);
+  workerId = Object.keys(history.workers)[0]!;
+  const taskId = String(history.workers[workerId]!.active);
+  await (await main.submit({ type: "input", content: "stop idle browser" }, context)).wait(context);
+  expect(stop).toHaveBeenCalledWith(workerId, taskId);
+  await (
+    await main.submit({ type: "input", content: "resume idle browser" }, context)
+  ).wait(context);
+  expect(admit).toHaveBeenCalledWith(workerId);
+  await until(async () => (await orchestration.listRunning()).length === 0);
+});
+
 test.each([true, "chat-only"] as const)(
   "context mode %s copies only prepared context into linear worker storage",
   async (mode) => {

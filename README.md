@@ -34,6 +34,10 @@ Authenticated `GET /api/memory/usage` returns separate incremental and rebuild t
 
 The durable `batty.memory-usage` document stores totals. `batty.memory-call` entries in `runtime.sqlite` hold per-attempt operation, generation/node range, source hash, model, timing, stop reason, response ID and returned usage. They contain no source text or provider error messages and do not enter the memory tree or conversational usage totals.
 
+## Browser tool lifecycle
+
+Detached browser instances and tabs survive Batty restarts. Active or interrupted worker executions and the main browser are retained. Completed workers keep their browser for 30 minutes; resume/queue within that window reuses it, and a later completion starts a fresh window. Explicitly stopped idle workers close immediately. Expiry runs each minute and at startup, using persisted idle receipts without resetting their deadlines. After expiry, start with `browser open` to create a new browser.
+
 ## Browser diagnostics
 
 Authenticated, online clients report window errors, unhandled rejections, Vue errors and caught file-read/submission failures to `/api/browser-errors`. Reports contain build/time, browser/platform family, stage, native error name, allowlisted diagnostic messages, asset-only stack locations, HTTP status and a random correlation ID. Prompt text, filenames, image bytes, response bodies and URL queries are excluded. Unknown messages are redacted; original UI errors remain visible.

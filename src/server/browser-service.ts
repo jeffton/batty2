@@ -216,6 +216,7 @@ function formatEvaluationResult(value: unknown): string {
 export class BrowserService {
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly queues = new Map<string, Promise<void>>();
+  private readonly lifecycleQueues = new Map<string, Promise<void>>();
   private readonly epochs = new Map<string, number>();
   private disposed = false;
 
@@ -339,6 +340,39 @@ export class BrowserService {
   async closeSession(sessionId: string): Promise<void> {
     this.epochs.set(sessionId, (this.epochs.get(sessionId) ?? 0) + 1);
     await this.closeSessionNow(sessionId);
+  }
+
+  async hasSession(sessionId: string): Promise<boolean> {
+    return (
+      this.sessions.has(sessionId) ||
+      (await readBrowserJson(
+        path.join(browserSessionDirectory(this.persistenceRoot, sessionId), "launch.json"),
+      )) !== undefined
+    );
+  }
+
+  /** Worker admission and expiry share a queue separate from potentially interrupted CDP actions. */
+  async withSessionLifecycle<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    return this.serialized(sessionId, operation, this.lifecycleQueues);
+  }
+
+  /** Recheck ownership under the admission lock before closing a retained browser. */
+  async expireWorkerSession(
+    sessionId: string,
+    getIdle: () => Promise<{ taskId: string; since: number; stopped: boolean } | undefined>,
+    retentionMs: number,
+    now = Date.now(),
+  ): Promise<void> {
+    await this.withSessionLifecycle(sessionId, async () => {
+      if (!(await this.hasSession(sessionId))) return;
+      const idle = await getIdle();
+      if (!idle) return;
+      const file = path.join(browserSessionDirectory(this.persistenceRoot, sessionId), "idle.json");
+      const previous = await readBrowserJson<{ taskId: string; since: number }>(file);
+      const receipt = previous?.taskId === idle.taskId ? previous : idle;
+      if (receipt !== previous) await writeBrowserJson(file, receipt);
+      if (idle.stopped || now - receipt.since >= retentionMs) await this.closeSession(sessionId);
+    });
   }
 
   async dispose(): Promise<void> {
@@ -853,19 +887,23 @@ export class BrowserService {
     if (!entries.some((entry) => entry.isDirectory())) await this.tailscaleProxy?.dispose();
   }
 
-  private async serialized<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.queues.get(sessionId) ?? Promise.resolve();
+  private async serialized<T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+    queues = this.queues,
+  ): Promise<T> {
+    const previous = queues.get(sessionId) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.queues.set(sessionId, current);
+    queues.set(sessionId, current);
     await previous;
     try {
       return await operation();
     } finally {
       release();
-      if (this.queues.get(sessionId) === current) this.queues.delete(sessionId);
+      if (queues.get(sessionId) === current) queues.delete(sessionId);
     }
   }
 }
