@@ -244,6 +244,11 @@ export class BrowserService {
     return await this.abortable(
       this.serialized(sessionId, async () => {
         signal?.throwIfAborted();
+        // Registering the action queue protects queued/running browser calls;
+        // admission waits for any expiry already closing the old instance.
+        await this.withSessionLifecycle(sessionId, async () => {
+          if (await this.hasSession(sessionId)) await this.touchSession(sessionId);
+        });
         try {
           let session = this.sessions.get(sessionId);
           if (
@@ -308,7 +313,10 @@ export class BrowserService {
           return await this.snapshotResult(session, input, page, frame, output);
         } finally {
           const session = this.sessions.get(sessionId);
-          if (session?.browser.isConnected()) await this.persistRegistry(session);
+          if (session?.browser.isConnected()) {
+            await this.persistRegistry(session);
+            await this.touchSession(sessionId);
+          }
         }
       }),
       signal,
@@ -356,22 +364,30 @@ export class BrowserService {
     return this.serialized(sessionId, operation, this.lifecycleQueues);
   }
 
-  /** Recheck ownership under the admission lock before closing a retained browser. */
-  async expireWorkerSession(
-    sessionId: string,
-    getIdle: () => Promise<{ taskId: string; since: number; stopped: boolean } | undefined>,
-    retentionMs: number,
-    now = Date.now(),
-  ): Promise<void> {
+  private async touchSession(sessionId: string): Promise<void> {
+    const now = new Date();
+    await fs.utimes(
+      path.join(browserSessionDirectory(this.persistenceRoot, sessionId), "launch.json"),
+      now,
+      now,
+    );
+  }
+
+  /** Browser activity, not conversation/task status, determines idle expiry. */
+  async expireIdleSession(sessionId: string, retentionMs: number, now = Date.now()): Promise<void> {
     await this.withSessionLifecycle(sessionId, async () => {
-      if (!(await this.hasSession(sessionId))) return;
-      const idle = await getIdle();
-      if (!idle) return;
-      const file = path.join(browserSessionDirectory(this.persistenceRoot, sessionId), "idle.json");
-      const previous = await readBrowserJson<{ taskId: string; since: number }>(file);
-      const receipt = previous?.taskId === idle.taskId ? previous : idle;
-      if (receipt !== previous) await writeBrowserJson(file, receipt);
-      if (idle.stopped || now - receipt.since >= retentionMs) await this.closeSession(sessionId);
+      if (this.queues.has(sessionId) || !(await this.hasSession(sessionId))) return;
+      const directory = browserSessionDirectory(this.persistenceRoot, sessionId);
+      const launch = await fs.stat(path.join(directory, "launch.json"));
+      const registry = await fs.stat(path.join(directory, "registry.json")).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      });
+      // Registry mtime covers browser use before launch.json was touched on actions.
+      // Both timestamps survive restart; reconnect alone does not reset expiry.
+      const lastUsed = Math.max(launch.mtimeMs, registry?.mtimeMs ?? launch.mtimeMs);
+      if (!this.queues.has(sessionId) && now - lastUsed >= retentionMs)
+        await this.closeSession(sessionId);
     });
   }
 
