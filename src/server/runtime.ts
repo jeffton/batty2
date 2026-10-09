@@ -229,6 +229,9 @@ export class Runtime {
         cwd,
       },
     });
+    // Main uses the installed extensions' tools. Older MCP discovery persisted a
+    // fixed allowlist, which otherwise hides tools added by later releases.
+    await main.configure({ tools: null }, context);
     if (!(await main.agent(context)).model) {
       await main.configure(
         {
