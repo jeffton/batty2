@@ -55,7 +55,7 @@ test.each([false, true])(
       );
       expect(corrections[0]).toContain("-".repeat(512));
       expect(corrections.at(-1)).toContain("162 UTF-8 bytes");
-      expect(corrections.at(-1)).toContain("retaining its languages");
+      expect(corrections.at(-1)).toContain("more aggressively in Danish");
       expect(corrections.at(-1)).not.toContain(candidates[0]);
       await memory.prepare();
       expect(completed).toBe(5);
