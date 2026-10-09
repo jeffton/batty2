@@ -692,7 +692,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
           { role: "system", content: COMPACT_PROMPT, timestamp: 0 },
           {
             role: "user",
-            content: `Compress this message or merge these two child lines into one line of at most ${nodeBytes} UTF-8 bytes. The following ruler is ${nodeBytes} ASCII bytes long; non-ASCII text needs more bytes per character:\n${"-".repeat(nodeBytes)}\nUse only the source below:\n<input>\n${source}\n</input>`,
+            content: `Compress this message or merge these two child lines into one line of at most ${nodeBytes} UTF-8 bytes. The following ruler is ${nodeBytes} ASCII bytes long; non-ASCII text needs more bytes per character:\n${"-".repeat(nodeBytes)}\nUse only the source below:\n<input>\n${source}\n</input>${force ? "\nThis is a selective language repair. Translate ALL unquoted summary prose into Danish, including short inherited Swedish phrases. Preserving user wording means preserving its meaning in Danish, not copying unquoted foreign wording. Preserve actual direct quotations, names, technical terms, code and URLs unchanged. Check every clause for untranslated prose before returning the summary." : ""}`,
             timestamp: 0,
           },
         ];

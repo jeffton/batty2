@@ -994,3 +994,31 @@ test("generation-two repair deduplicates overlapping roots without touching olde
     originals,
   );
 });
+
+test("language repair explicitly translates inherited foreign prose without changing originals", async () => {
+  const f = await fixture();
+  const state = await f.open({ nodeBytes: 512, compress: undefined, memoryModel: "faux/faux-1" });
+  cleanup.push(() => state.harness.close(context));
+  await state.main.commit(async (tx) => {
+    for (let i = 0; i < 2; i++)
+      await tx.appendEntry(state.main.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "Valde altan; resten uppskjutet.", timestamp: i + 1 }],
+      });
+  }, context);
+  await state.memory.prepare();
+  f.faux.setResponses([
+    (request) => {
+      expect(JSON.stringify(request.messages)).toContain(
+        "Translate ALL unquoted summary prose into Danish",
+      );
+      expect(JSON.stringify(request.messages)).toContain("Valde altan; resten uppskjutet.");
+      return fauxAssistantMessage([fauxText("user: Valgte altan; resten udskudt.")]);
+    },
+  ]);
+  await state.memory.repair([{ start: 0, count: 2 }], 0);
+  expect((await state.harness.snapshot(MemoryNodesDoc, state.main.id, "0+2", context))?.text).toBe(
+    "user: Valgte altan; resten udskudt.",
+  );
+  expect(await state.memory.zoom(0, 1)).toContain("Valde altan; resten uppskjutet.");
+});
