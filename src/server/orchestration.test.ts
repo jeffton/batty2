@@ -29,6 +29,7 @@ import { decodeRuntimeNotice } from "./runtime-notices.js";
 import { registerPushCompletions } from "./push-completions.js";
 import { entryMessages, type Runtime } from "./runtime.js";
 import type { WebPushService } from "./web-push.js";
+import { artifactRefs } from "./artifact-forwarding";
 import { suppressAgentCompletionNotification } from "../shared/agent-notification.js";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -1468,6 +1469,22 @@ test.each(
         sites: [site],
         fileChanges: [{ path: "a.ts" }],
       });
+      const directNotice = (await main.context(context)).messages
+        .filter((message) => message.role === "user")
+        .map((message) => decodeRuntimeNotice(message.content))
+        .find((notice) => notice?.data?.directDelivery);
+      expect(directNotice!.data!.directDelivery).toEqual({ text: "cron finished" });
+      const directArtifacts = directNotice!.data!.runtimeResultArtifacts as Parameters<
+        typeof artifactRefs
+      >[0];
+      expect(
+        artifactRefs(directArtifacts)
+          .map((item) => item.kind)
+          .sort(),
+      ).toEqual(["diff", "file", "site"]);
+      for (const item of artifactRefs(directArtifacts))
+        expect(directNotice!.text).toContain(item.ref);
+      expect(directNotice!.text).toContain("call attach-artifacts");
       expect(joinedModelInput).toContain(file.storedPath);
       expect(joinedModelInput).toContain("call attach-artifacts");
       expect(joinedModelInput).toContain("diff:");
@@ -1484,7 +1501,7 @@ test.each(
     for (const input of [joinedModelInput, reportModelInput]) {
       expect(input).toContain(file.storedPath);
       expect(input).toContain(file.name);
-      expect(input).toContain("call attach-files");
+      expect(input).toContain("Use attach-files to import local files by path");
       expect(input).toContain("Copying attachment:// links does not deliver attachments");
       expect(input).toContain("call attach-artifacts");
       expect(input).toContain("diff:");
@@ -1553,7 +1570,7 @@ test("async subagent reports expose stored attachment paths in parent model inpu
   await main.waitForIdle(context);
   expect(reportInput).toContain(file.name);
   expect(reportInput).toContain(file.storedPath);
-  expect(reportInput).toContain("call attach-files");
+  expect(reportInput).toContain("Use attach-files to import local files by path");
   expect(reportInput).toContain("do not automatically forward every draft");
   expect(reportInput).toContain("call attach-artifacts");
   expect(reportInput).toContain("async.ts");

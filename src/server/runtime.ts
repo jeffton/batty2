@@ -470,6 +470,7 @@ export class Runtime {
             const artifacts = mergeResponseArtifacts(message, forwardedResponseArtifacts(entries));
             message.fileChanges = artifacts.fileChanges;
             message.sites = artifacts.sites;
+            message.sentFiles = artifacts.sentFiles;
           }
         }
       }),

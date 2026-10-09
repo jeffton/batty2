@@ -8,7 +8,8 @@ import { storeSentFiles } from "./send-files";
 test("attach-files describes execution ownership and explicit child forwarding", () => {
   const tool = createAttachFilesTool({} as never);
   expect(tool.description).toContain("current agent");
-  expect(tool.description).toContain("call attach-files with their stored absolute local paths");
+  expect(tool.description).toContain("call attach-artifacts with the listed file refs");
+  expect(tool.description).toContain("Use attach-files to import local files by path");
   expect(tool.description).toContain("Copying attachment:// links does not deliver attachments");
   expect(tool.promptGuidelines).toContainEqual(
     expect.stringContaining("do not automatically forward every draft"),

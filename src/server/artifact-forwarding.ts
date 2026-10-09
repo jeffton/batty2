@@ -6,10 +6,11 @@ import type { AgentTurnArtifacts } from "./agent-turn-file-changes";
 import { decodeRuntimeNotice } from "./runtime-notices";
 
 export const ARTIFACT_FORWARDING_INSTRUCTION =
-  "Diffs and sites belong to the execution scope that produced them. To attach selected existing diffs or sites from a child report to your own response, call attach-artifacts with the listed refs. Links or copied patch text do not forward response metadata. Do not automatically forward every draft. This reuses the saved objects; do not rerun actions or reconstruct diffs.";
+  "Files, diffs and sites belong to the execution scope that produced them. To attach selected existing artifacts from a report to your own response, call attach-artifacts with the listed refs. This reuses the original immutable objects, including file IDs and diff contents, without copying files. Use attach-files only to import local files. Links or copied patch text do not forward response metadata. Do not automatically forward every draft. Do not rerun actions or reconstruct diffs.";
 
 export function artifactRefs(artifacts: AgentTurnArtifacts = {}) {
   return [
+    ...(artifacts.sentFiles ?? []).map((file) => ({ kind: "file" as const, value: file })),
     ...(artifacts.fileChanges ?? []).map((diff) => ({ kind: "diff" as const, value: diff })),
     ...(artifacts.sites ?? []).map((site) => ({ kind: "site" as const, value: site })),
   ].map((item) => ({
@@ -28,7 +29,11 @@ export function reportWithArtifacts(text: string, artifacts: AgentTurnArtifacts 
       JSON.stringify({
         ref,
         kind,
-        ...(kind === "diff" ? { path: value.path } : { name: value.name, url: value.url }),
+        ...(kind === "diff"
+          ? { path: value.path }
+          : kind === "file"
+            ? { name: value.name, id: value.id, downloadUrl: value.downloadUrl }
+            : { name: value.name, url: value.url }),
       }),
     ),
     ARTIFACT_FORWARDING_INSTRUCTION,
@@ -62,39 +67,37 @@ export function mergeResponseArtifacts(...sources: AgentTurnArtifacts[]): AgentT
   const items = [...unique.values()];
   const fileChanges = items.flatMap((item) => (item.kind === "diff" ? [item.value] : []));
   const sites = items.flatMap((item) => (item.kind === "site" ? [item.value] : []));
-  return { ...(fileChanges.length ? { fileChanges } : {}), ...(sites.length ? { sites } : {}) };
+  const sentFiles = items.flatMap((item) => (item.kind === "file" ? [item.value] : []));
+  return {
+    ...(fileChanges.length ? { fileChanges } : {}),
+    ...(sites.length ? { sites } : {}),
+    ...(sentFiles.length ? { sentFiles } : {}),
+  };
 }
 
 export function forwardedResponseArtifacts(entries: readonly EntryRecord[]): AgentTurnArtifacts {
-  const diffs = new Map<string, NonNullable<AgentTurnArtifacts["fileChanges"]>[number]>();
-  const sites = new Map<string, NonNullable<AgentTurnArtifacts["sites"]>[number]>();
+  const sources: AgentTurnArtifacts[] = [];
   for (const entry of entries) {
     for (const message of entry.model ?? []) {
       if (message.role !== "toolResult") continue;
       const forwarded = (message.details as { forwardedArtifacts?: AgentTurnArtifacts })
         ?.forwardedArtifacts;
-      for (const item of artifactRefs(forwarded)) {
-        if (item.kind === "diff") diffs.set(item.ref, item.value);
-        else sites.set(item.ref, item.value);
-      }
+      if (forwarded) sources.push(forwarded);
     }
   }
-  return {
-    ...(diffs.size ? { fileChanges: [...diffs.values()] } : {}),
-    ...(sites.size ? { sites: [...sites.values()] } : {}),
-  };
+  return mergeResponseArtifacts(...sources);
 }
 
 export function createAttachArtifactsTool() {
   return defineTool({
     name: "attach-artifacts",
-    description: `Attach selected existing diffs and sites from reports to the current response. ${ARTIFACT_FORWARDING_INSTRUCTION}`,
+    description: `Attach selected existing files, diffs and sites from reports to the current response. ${ARTIFACT_FORWARDING_INSTRUCTION}`,
     parameters: Type.Object(
       {
         refs: Type.Array(Type.String(), {
           minItems: 1,
           description:
-            "Stable diff/site refs listed in a received report. Only artifacts already present in this conversation can be forwarded.",
+            "Stable file/diff/site refs listed in a received report. Only artifacts already present in this conversation can be forwarded.",
         }),
       },
       { additionalProperties: false },
@@ -123,6 +126,7 @@ export function createAttachArtifactsTool() {
       const selected = [...wanted].map((ref) => found.get(ref)!);
       const fileChanges = selected.flatMap((item) => (item.kind === "diff" ? [item.value] : []));
       const sites = selected.flatMap((item) => (item.kind === "site" ? [item.value] : []));
+      const sentFiles = selected.flatMap((item) => (item.kind === "file" ? [item.value] : []));
       return {
         content: [
           {
@@ -131,7 +135,8 @@ export function createAttachArtifactsTool() {
           },
         ],
         details: {
-          forwardedArtifacts: { fileChanges, sites },
+          forwardedArtifacts: { fileChanges, sites, ...(sentFiles.length ? { sentFiles } : {}) },
+          ...(sentFiles.length ? { sentFiles } : {}),
           ...(fileChanges.length ? { fileChanges } : {}),
           ...(sites.length ? { sites } : {}),
         } as unknown as JsonValue,

@@ -2,10 +2,12 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import type { AgentTurnArtifacts, DurableFileChange } from "./agent-turn-file-changes";
 import type { SentFileDescriptor, SiteDescriptor } from "@/shared/types";
+import { artifactRefs, mergeResponseArtifacts } from "./artifact-forwarding";
 import { decodeRuntimeNotice } from "./runtime-notices";
 
 export type RuntimeResultArtifacts = AgentTurnArtifacts & {
   battyFileChanges?: DurableFileChange[];
+  forwardedArtifacts?: AgentTurnArtifacts;
 };
 
 /** Only the answered input's own transcript contributes report artifacts. */
@@ -15,12 +17,23 @@ export function runtimeResultArtifacts(entries: readonly EntryRecord[]): Runtime
   const changes = new Map<string, DurableFileChange>();
   const mutations: DurableFileChange[] = [];
   const mutationKeys = new Set<string>();
-  const deliveredChanges = new Map<string, string>();
+  const deliveredChanges = new Map<
+    string,
+    NonNullable<AgentTurnArtifacts["fileChanges"]>[number]
+  >();
   const add = (details: RuntimeResultArtifacts | undefined) => {
     for (const file of details?.sentFiles ?? []) files.set(file.id, file);
     for (const site of details?.sites ?? []) sites.set(site.id, site);
-    for (const change of details?.fileChanges ?? [])
-      deliveredChanges.set(change.path, change.patch);
+    // Saved diffs are immutable artifacts, not mutation snapshots. Only local
+    // snapshots are aggregated; forwarded patches never enter that calculation.
+    const saved = mergeResponseArtifacts(details?.forwardedArtifacts ?? {}, {
+      fileChanges: (details?.fileChanges ?? []).filter(
+        (change) => !details?.battyFileChanges?.some((snapshot) => snapshot.path === change.path),
+      ),
+    });
+    for (const item of artifactRefs(saved)) {
+      if (item.kind === "diff") deliveredChanges.set(item.ref, item.value);
+    }
     for (const change of details?.battyFileChanges ?? []) {
       const key = `${change.path}:${change.order}`;
       if (change.order !== undefined && mutationKeys.has(key)) continue;
@@ -44,20 +57,23 @@ export function runtimeResultArtifacts(entries: readonly EntryRecord[]): Runtime
     const first = changes.get(change.path);
     changes.set(change.path, { ...change, before: first ? first.before : change.before });
   }
+  const immutableDiffs = [...deliveredChanges.values()];
   for (const change of changes.values()) {
-    if (change.before === change.after) deliveredChanges.delete(change.path);
-    else
-      deliveredChanges.set(
-        change.path,
-        generateUnifiedPatch(change.path, change.before ?? "", change.after),
-      );
+    if (change.before !== change.after) {
+      const diff = {
+        path: change.path,
+        patch: generateUnifiedPatch(change.path, change.before ?? "", change.after),
+      };
+      deliveredChanges.set(artifactRefs({ fileChanges: [diff] })[0]!.ref, diff);
+    }
   }
   return {
     ...(files.size ? { sentFiles: [...files.values()] } : {}),
     ...(sites.size ? { sites: [...sites.values()] } : {}),
     ...(mutations.length ? { battyFileChanges: mutations } : {}),
-    ...(deliveredChanges.size
-      ? { fileChanges: [...deliveredChanges].map(([path, patch]) => ({ path, patch })) }
+    ...(mutations.length && immutableDiffs.length
+      ? { forwardedArtifacts: { fileChanges: immutableDiffs } }
       : {}),
+    ...(deliveredChanges.size ? { fileChanges: [...deliveredChanges.values()] } : {}),
   };
 }

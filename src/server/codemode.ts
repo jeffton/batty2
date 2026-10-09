@@ -282,7 +282,13 @@ export function createCodemodeTool(
         const fileChanges = effects("fileChanges");
         const forwarded = calls.flatMap((call) =>
           call.forwardedArtifacts
-            ? [call.forwardedArtifacts as { fileChanges: JsonValue[]; sites: JsonValue[] }]
+            ? [
+                call.forwardedArtifacts as {
+                  fileChanges?: JsonValue[];
+                  sites?: JsonValue[];
+                  sentFiles?: JsonValue[];
+                },
+              ]
             : [],
         );
         return {
@@ -306,8 +312,9 @@ export function createCodemodeTool(
             ...(forwarded.length
               ? {
                   forwardedArtifacts: {
-                    fileChanges: forwarded.flatMap((artifacts) => artifacts.fileChanges),
-                    sites: forwarded.flatMap((artifacts) => artifacts.sites),
+                    fileChanges: forwarded.flatMap((artifacts) => artifacts.fileChanges ?? []),
+                    sites: forwarded.flatMap((artifacts) => artifacts.sites ?? []),
+                    sentFiles: forwarded.flatMap((artifacts) => artifacts.sentFiles ?? []),
                   },
                 }
               : {}),

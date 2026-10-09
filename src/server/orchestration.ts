@@ -695,7 +695,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
                     role: "user",
                     content: encodeRuntimeNotice({
                       kind: "cron",
-                      text: `[cron ${task.input.workerId} completed output]\n${text}`,
+                      text: `[cron ${task.input.workerId} completed output]\n${reportWithArtifacts(text, artifacts)}`,
                       data: {
                         directDelivery: { text },
                         ...(artifacts ? { runtimeResultArtifacts: artifacts } : {}),

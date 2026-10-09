@@ -14,7 +14,7 @@ import { Runtime, context } from "./runtime";
 import { artifactRefs } from "./artifact-forwarding";
 import { encodeRuntimeNotice } from "./runtime-notices";
 
-test("Runtime response and reopened history attach exactly selected child diff/site objects", async () => {
+test("Runtime response and reopened history reuse files and distinct same-path immutable diffs", async () => {
   const directory = await mkdtemp(join(tmpdir(), "batty-forwarded-runtime-"));
   vi.stubEnv("PI_OFFLINE", "1");
   await mkdir(join(directory, ".batty"));
@@ -32,10 +32,24 @@ test("Runtime response and reopened history attach exactly selected child diff/s
     memoryModel: "faux/artifact-test",
   };
   const selected = {
-    fileChanges: [{ path: "a.ts", patch: "original saved patch\n" }],
+    fileChanges: [
+      { path: "a.ts", patch: "original saved patch\n" },
+      { path: "a.ts", patch: "another original saved patch\n" },
+    ],
+    sentFiles: [
+      {
+        id: "original-file-id",
+        name: "photo.png",
+        size: 1,
+        mimeType: "image/png",
+        kind: "image" as const,
+        downloadUrl: "/api/sent-files/original-file-id",
+      },
+    ],
     sites: [{ id: "selected", name: "Chosen site", url: "/chosen", public: false }],
   };
   const inventory = {
+    sentFiles: selected.sentFiles,
     fileChanges: [...selected.fileChanges, { path: "draft.ts", patch: "discarded draft" }],
     sites: [...selected.sites, { id: "draft", name: "Draft", url: "/draft", public: false }],
   };
@@ -74,9 +88,10 @@ test("Runtime response and reopened history attach exactly selected child diff/s
       const response = (await runtime!.messages(mainId)).messages.findLast(
         (message) => message.role === "assistant",
       );
-      expect(response).toMatchObject({ fileChanges: selected.fileChanges, sites: selected.sites });
+      expect(response).toMatchObject(selected);
       if (response?.role === "assistant") {
-        expect(response.fileChanges).toHaveLength(1);
+        expect(response.fileChanges).toHaveLength(2);
+        expect(response.sentFiles).toEqual(selected.sentFiles);
         expect(response.sites).toHaveLength(1);
       }
     };

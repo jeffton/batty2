@@ -47,7 +47,7 @@ const options: CodeViewOptions<undefined, undefined> = {
 
 function buildItems(): CodeViewItem<undefined>[] {
   return props.files.map((file, index) => ({
-    id: file.path,
+    id: `${props.popoverId}:${index}`,
     type: "diff",
     fileDiff: pierre!.parsePatchFiles(file.patch, `${props.popoverId}:${index}`)[0]!.files[0]!,
   }));
