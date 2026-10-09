@@ -66,7 +66,9 @@ describe("cron and subagents popover", () => {
       sessionId: "cron-session",
     };
     vi.mocked(api.listRunningSubagents).mockResolvedValue([agent]);
-    vi.mocked(api.listWorkspaceCronJobs).mockImplementation(async (id) => [job(id)]);
+    vi.mocked(api.listWorkspaceCronJobs).mockImplementation(async (id) => [
+      { ...job(id), ...(id === "second" ? { delivery: "direct" as const } : {}) },
+    ]);
     vi.mocked(api.listWorkspaceCronRunLogs).mockImplementation(async (id) =>
       id === "second" ? [run] : [],
     );
@@ -97,18 +99,11 @@ describe("cron and subagents popover", () => {
       expect(cronPanel.text()).toContain("Job in first");
       expect(cronPanel.text()).toContain("Job in second");
       expect(cronPanel.text()).toContain("Second workspace");
-      vi.mocked(api.updateCronDelivery).mockResolvedValue({ ...job("first"), delivery: "direct" });
-      const delivery = cronPanel.findAll("select")[0]!;
-      expect((delivery.element as HTMLSelectElement).value).toBe("assistant");
-      await delivery.setValue("direct");
-      await flushPromises();
-      expect(api.updateCronDelivery).toHaveBeenCalledWith("first", "direct");
-      expect((delivery.element as HTMLSelectElement).value).toBe("direct");
-      vi.mocked(api.updateCronDelivery).mockRejectedValue(new Error("Save failed"));
-      await delivery.setValue("assistant");
-      await flushPromises();
-      expect(wrapper.get('[role="alert"]').text()).toBe("Save failed");
-      expect((delivery.element as HTMLSelectElement).value).toBe("direct");
+      const jobDetails = cronPanel.findAll(".cron-popover__run-details");
+      expect(jobDetails[0]!.text()).toContain("Delivery: Via assistant");
+      expect(jobDetails[1]!.text()).toContain("Delivery: Direct");
+      expect(cronPanel.find("select").exists()).toBe(false);
+      expect(api.updateCronDelivery).not.toHaveBeenCalled();
       await wrapper.get("#cron-test-subagents-tab").trigger("click");
       const agentPanel = wrapper.get("#cron-test-subagents-panel");
       expect(agentPanel.text()).toContain(
