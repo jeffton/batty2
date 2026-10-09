@@ -1469,6 +1469,9 @@ test.each(
         fileChanges: [{ path: "a.ts" }],
       });
       expect(joinedModelInput).toContain(file.storedPath);
+      expect(joinedModelInput).toContain("call attach-artifacts");
+      expect(joinedModelInput).toContain("diff:");
+      expect(joinedModelInput).toContain("site:");
       return;
     }
     expect(reports).toHaveLength(1);
@@ -1483,6 +1486,9 @@ test.each(
       expect(input).toContain(file.name);
       expect(input).toContain("call attach-files");
       expect(input).toContain("Copying attachment:// links does not deliver attachments");
+      expect(input).toContain("call attach-artifacts");
+      expect(input).toContain("diff:");
+      expect(input).toContain("site:");
     }
   },
   15000,
@@ -1509,7 +1515,11 @@ test("async subagent reports expose stored attachment paths in parent model inpu
           parameters: Type.Object({}),
           execute: async () => ({
             content: [{ type: "text", text: "Attached" }],
-            details: { sentFiles: [file] },
+            details: {
+              sentFiles: [file],
+              sites: [{ id: "async-site", name: "Async demo", url: "/async-site", public: false }],
+              fileChanges: [{ path: "async.ts", patch: "saved patch" }],
+            },
           }),
         }),
       ],
@@ -1545,6 +1555,9 @@ test("async subagent reports expose stored attachment paths in parent model inpu
   expect(reportInput).toContain(file.storedPath);
   expect(reportInput).toContain("call attach-files");
   expect(reportInput).toContain("do not automatically forward every draft");
+  expect(reportInput).toContain("call attach-artifacts");
+  expect(reportInput).toContain("async.ts");
+  expect(reportInput).toContain("Async demo");
 });
 
 test("queue admits the current report before delivering the queued prompt", async () => {

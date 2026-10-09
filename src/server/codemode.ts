@@ -280,6 +280,11 @@ export function createCodemodeTool(
         const sites = effects("sites");
         const battyFileChanges = effects("battyFileChanges");
         const fileChanges = effects("fileChanges");
+        const forwarded = calls.flatMap((call) =>
+          call.forwardedArtifacts
+            ? [call.forwardedArtifacts as { fileChanges: JsonValue[]; sites: JsonValue[] }]
+            : [],
+        );
         return {
           content: limited,
           isError: !result.ok,
@@ -298,6 +303,14 @@ export function createCodemodeTool(
             ...(sites.length ? { sites } : {}),
             ...(battyFileChanges.length ? { battyFileChanges } : {}),
             ...(fileChanges.length ? { fileChanges } : {}),
+            ...(forwarded.length
+              ? {
+                  forwardedArtifacts: {
+                    fileChanges: forwarded.flatMap((artifacts) => artifacts.fileChanges),
+                    sites: forwarded.flatMap((artifacts) => artifacts.sites),
+                  },
+                }
+              : {}),
           } as unknown as JsonValue,
           ...(control ? { control } : {}),
         };

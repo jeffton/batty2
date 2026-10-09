@@ -42,6 +42,7 @@ import { createBashAbortWatcher } from "./tools-abort-watcher";
 import { WorkerDoc } from "./orchestration";
 import { MAIN_MEMORY_TOOLS } from "./main-memory-policy";
 import { conversationPolicy } from "./conversation-policy";
+import { createAttachArtifactsTool } from "./artifact-forwarding";
 
 export async function toolCwd(api: ToolExecutionApi, ctx: Context): Promise<string> {
   const cwd = api.env?.cwd ?? (await api.agent(ctx)).cwd;
@@ -180,6 +181,7 @@ export async function createTools(
   };
   const local: ToolRegistration[] = [
     ...native,
+    createAttachArtifactsTool(),
     bridge("web-search", () => createWebSearchTool(config), "safe"),
     scoped("browser", createBrowserTool),
     scoped("sites", createSitesTool),

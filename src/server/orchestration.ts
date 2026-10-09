@@ -42,6 +42,7 @@ import {
 
 import { runtimeResultArtifacts } from "./runtime-result-artifacts.js";
 import { reportWithAttachments } from "./attachment-contract.js";
+import { reportWithArtifacts } from "./artifact-forwarding.js";
 import type { AgentTurnArtifacts } from "./agent-turn-file-changes.js";
 import { MAIN_MEMORY_TOOLS, withoutMainMemory } from "./main-memory-policy.js";
 
@@ -633,7 +634,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           const target = (await runtime.conversation(targetId, ctx))!;
           const content = encodeRuntimeNotice({
             kind: task.input.runId ? "cron" : "subagent",
-            text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${reportWithAttachments(text, artifacts?.sentFiles)}`,
+            text: `[${task.input.runId ? "cron" : "subagent"} ${task.input.workerId} result]\n${reportWithArtifacts(reportWithAttachments(text, artifacts?.sentFiles), artifacts)}`,
             data: {
               ...(artifacts ? { runtimeResultArtifacts: artifacts } : {}),
               runtimeNotice: {
@@ -927,7 +928,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
           ...reply(
             `Subagent ${settled.state.outcome.status === "completed" ? "result" : settled.state.outcome.status}. Session ID: ${workerId}\n\n${
               settled.state.outcome.status === "completed"
-                ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
+                ? reportWithArtifacts(
+                    reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles),
+                    artifacts,
+                  )
                 : ""
             }`.trimEnd(),
           ),
@@ -1070,7 +1074,10 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         ...reply(
           `Subagent ${settled.state.outcome.status === "completed" ? "result" : settled.state.outcome.status}. Session ID: ${result.workerId}\n\n${
             settled.state.outcome.status === "completed"
-              ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
+              ? reportWithArtifacts(
+                  reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles),
+                  artifacts,
+                )
               : ""
           }`.trimEnd(),
         ),

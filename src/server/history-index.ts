@@ -31,8 +31,29 @@ export async function createHistoryIndex(db: SqliteDatabase) {
     await tx.exec(
       "CREATE INDEX IF NOT EXISTS batty_submissions_by_entry ON submissions(conversation_id, json_extract(record, '$.entry'))",
     );
+    await tx.exec(
+      "CREATE INDEX IF NOT EXISTS batty_submissions_by_answer ON submissions(conversation_id, json_extract(record, '$.answer'))",
+    );
   });
   return {
+    async forwardedArtifacts(conversationId: number, answerId: number) {
+      const submission = await db.get<{ input: number | null }>(
+        "SELECT MIN(json_extract(record, '$.entry')) AS input FROM submissions WHERE conversation_id = ? AND json_extract(record, '$.answer') = ?",
+        conversationId,
+        answerId,
+      );
+      if (submission?.input == null) return [];
+      const rows = await db.all<{ record: string }>(
+        `SELECT record FROM entries WHERE conversation_id = ? AND id >= ? AND id <= ?
+          AND EXISTS (SELECT 1 FROM json_each(json_extract(record, '$.model'))
+            WHERE json_extract(value, '$.role') = 'toolResult' AND json_type(value, '$.details.forwardedArtifacts') = 'object')
+          ORDER BY id`,
+        conversationId,
+        submission.input,
+        answerId,
+      );
+      return rows.map((row) => JSON.parse(row.record) as EntryRecord);
+    },
     async entries(
       conversationId: number,
       before: string | undefined,

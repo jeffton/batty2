@@ -33,6 +33,7 @@ import { stateDirPath } from "./options";
 import { listWorkspaces } from "./workspaces";
 import { normalizeMessage, normalizeBlocks } from "./pi-state";
 import { hydrateRuntimeResultArtifacts } from "./runtime-result-artifacts-history";
+import { forwardedResponseArtifacts, mergeResponseArtifacts } from "./artifact-forwarding";
 import { queuedPromptDisplay } from "./queued-prompt-display";
 import { createHistoryIndex } from "./history-index";
 import { createMemorySearch } from "./memory-search";
@@ -458,9 +459,20 @@ export class Runtime {
     const page = await this.historyIndex.entries(conversationId, before, limit, after, maximum);
     const messages = entryMessages(page.entries);
     await Promise.all(
-      messages.map((message) =>
-        hydrateRuntimeResultArtifacts(this.storage, conversationId, message),
-      ),
+      messages.map(async (message) => {
+        await hydrateRuntimeResultArtifacts(this.storage, conversationId, message);
+        if (message.role === "assistant" && message.turnPhase === "final") {
+          const entries = await this.historyIndex.forwardedArtifacts(
+            conversationId,
+            Number(message.id.split(":")[0]),
+          );
+          if (entries.length) {
+            const artifacts = mergeResponseArtifacts(message, forwardedResponseArtifacts(entries));
+            message.fileChanges = artifacts.fileChanges;
+            message.sites = artifacts.sites;
+          }
+        }
+      }),
     );
     return { messages, hasMoreMessages: page.hasMoreMessages, nextBefore: page.nextBefore };
   }
