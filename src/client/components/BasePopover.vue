@@ -36,16 +36,18 @@ defineExpose({ element, showPopover, hidePopover, togglePopover });
 </script>
 
 <template>
-  <component
-    :is="props.as"
-    ref="element"
-    class="base-popover"
-    :popover="props.mode"
-    v-bind="$attrs"
-    @toggle="emit('toggle', $event)"
-  >
-    <slot />
-  </component>
+  <Teleport to="body">
+    <component
+      :is="props.as"
+      ref="element"
+      class="base-popover"
+      :popover="props.mode"
+      v-bind="$attrs"
+      @toggle="emit('toggle', $event)"
+    >
+      <slot />
+    </component>
+  </Teleport>
 </template>
 
 <style scoped>

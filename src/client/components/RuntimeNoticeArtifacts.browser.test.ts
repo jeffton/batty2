@@ -89,4 +89,74 @@ for (const { width, colorScheme } of [
       await page.close();
     }
   }, 30_000);
+
+  test(`runtime notice popovers isolate styles and preserve nested navigation (${colorScheme})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, colorScheme });
+    page.setDefaultTimeout(5000);
+    await page.route("**/api/sessions/42", (route) =>
+      route.fulfill({
+        json: {
+          id: "42",
+          sessionId: "42",
+          messages: [
+            {
+              id: "worker-reply",
+              role: "assistant",
+              timestamp: 1,
+              turnPhase: "final",
+              blocks: [{ type: "text", text: "Worker `inline code`" }],
+            },
+            {
+              id: "nested-notice",
+              role: "custom",
+              timestamp: 2,
+              customType: "batty-runtime-notice:subagent",
+              text: "Nested worker",
+              data: { subagent: { sessionId: "43" } },
+            },
+          ],
+          activeTools: [],
+          isStreaming: false,
+        },
+      }),
+    );
+    await page.route("**/api/sessions/43", (route) =>
+      route.fulfill({
+        json: { id: "43", sessionId: "43", messages: [], activeTools: [], isStreaming: false },
+      }),
+    );
+    try {
+      await page.goto(url);
+      const normalCode = page.locator(".message--assistant .markdown-body code").first();
+      const normalBackground = await normalCode.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      );
+      const noticeBackground = await page
+        .locator(".message__runtime-markdown code")
+        .first()
+        .evaluate((element) => getComputedStyle(element).backgroundColor);
+      expect(noticeBackground).not.toBe(normalBackground);
+      await page.getByRole("button", { name: "Open subagent session", exact: true }).click();
+      const parent = page.locator("#subagent-notice-popover-42");
+      await parent.getByText("Worker inline code", { exact: true }).waitFor();
+      expect(
+        await parent
+          .locator(".markdown-body code")
+          .evaluate((element) => getComputedStyle(element).backgroundColor),
+      ).toBe(normalBackground);
+      expect(await parent.evaluate((element) => element.parentElement === document.body)).toBe(
+        true,
+      );
+      await parent.getByRole("button", { name: "Open subagent session", exact: true }).click();
+      const child = page.locator("#subagent-notice-popover-43");
+      await child.locator(".transcript").waitFor();
+      expect(await parent.evaluate((element) => element.matches(":popover-open"))).toBe(true);
+      expect(await child.evaluate((element) => element.matches(":popover-open"))).toBe(true);
+      await child.getByRole("button", { name: "Close subagent transcript" }).click();
+      expect(await parent.evaluate((element) => element.matches(":popover-open"))).toBe(true);
+      await parent.getByRole("button", { name: "Close subagent transcript" }).click();
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
 }
