@@ -54,7 +54,7 @@ test("resume admission cannot interleave with expiry reading persisted activity"
   }
 });
 
-test("queued browser calls do not prevent expiry and fail if their browser expires", async () => {
+test("queued browser calls prevent expiry until they settle", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-queued-"));
   const service = new BrowserService(undefined, 4, root);
   let release!: () => void;
@@ -62,6 +62,11 @@ test("queued browser calls do not prevent expiry and fail if their browser expir
     release = resolve;
   });
   const queues = (service as unknown as { queues: Map<string, Promise<void>> }).queues;
+  const createSession = vi.spyOn(
+    service as unknown as { createSession: () => Promise<never> },
+    "createSession",
+  );
+  createSession.mockRejectedValue(new Error("Action interrupted"));
   try {
     const launch = path.join(browserSessionDirectory(root, "worker"), "launch.json");
     await writeBrowserJson(launch, { useTailscale: false });
@@ -69,15 +74,18 @@ test("queued browser calls do not prevent expiry and fail if their browser expir
     // Hold admission without running a browser action.
     queues.set("worker", gate);
     const call = service.execute("worker", { action: "pages" });
-    const rejected = expect(call).rejects.toThrow(
-      'No active browser page. Start with action="open".',
-    );
+    const rejected = expect(call).rejects.toThrow("Action interrupted");
     await service.expireIdleSession("worker", 100, 1_000);
-    expect(await service.hasSession("worker")).toBe(false);
+    expect(await service.hasSession("worker")).toBe(true);
+    expect(createSession).not.toHaveBeenCalled();
     release();
     await rejected;
+    await fs.utimes(launch, new Date(0), new Date(0));
+    await service.expireIdleSession("worker", 100, 1_000);
+    expect(await service.hasSession("worker")).toBe(false);
   } finally {
     release();
+    createSession.mockRestore();
     await service.dispose();
     await fs.rm(root, { recursive: true, force: true });
   }
