@@ -658,8 +658,9 @@ export function createMemory(config: MemoryConfig, models: Models) {
     source: string,
     context: Context,
     attribution: Pick<MemoryCall, "operation" | "generation" | "start" | "count">,
+    force = false,
   ) {
-    if (!source || utf8Bytes(source) <= nodeBytes) return source;
+    if (!source || (!force && utf8Bytes(source) <= nodeBytes)) return source;
     let callNumber = 0;
     let attempts = 0;
     let shortest = "";
@@ -1415,6 +1416,85 @@ export function createMemory(config: MemoryConfig, models: Models) {
       };
     },
     search,
+    async repair(roots: Part[], generation: number, dryRun = false) {
+      return exclusive(async () => {
+        const context = background.context;
+        await load(context);
+        if (generation !== (index.generation ?? 0))
+          throw new RangeError("Active memory generation changed");
+        if (rebuilding) throw new Error("Cannot repair during a full rebuild");
+        if (!roots.length) throw new RangeError("At least one repair root is required");
+        const selected = new Map<string, Part>();
+        for (const root of roots) {
+          if (
+            !Number.isSafeInteger(root.start) ||
+            !Number.isSafeInteger(root.count) ||
+            root.count < 1 ||
+            Math.log2(root.count) % 1 !== 0 ||
+            root.start < 0 ||
+            root.start % root.count !== 0 ||
+            root.start + root.count > index.viewCount
+          )
+            throw new RangeError(`Invalid repair root ${key(root)}`);
+          await childText(root, context, generation);
+          for (let count = root.count; count <= index.viewCount; count *= 2) {
+            const part = { start: Math.floor(root.start / count) * count, count };
+            if ((await nodeAt(part, context, generation)) !== undefined)
+              selected.set(key(part), part);
+          }
+        }
+        const parts = [...selected.values()].sort((a, b) => a.count - b.count || a.start - b.start);
+        if (dryRun) return { generation, nodes: parts.map((part) => ({ ...part })) };
+        // Stage the entire closure before writing. The shared exclusive queue blocks
+        // incremental maintenance; readers keep the coherent old overview meanwhile.
+        const staged = new Map<string, string>();
+        const previous = new Map<string, string>();
+        for (const part of parts) {
+          previous.set(key(part), await childText(part, context, generation));
+          const child = async (start: number) => {
+            const childPart = { start, count: part.count / 2 };
+            return staged.get(key(childPart)) ?? childText(childPart, context, generation);
+          };
+          const leaf = part.count === 1 ? await leafAt(part.start, context) : undefined;
+          const source = leaf
+            ? isMemoryNoise(leaf)
+              ? ""
+              : `${leaf.kind}: ${leaf.text}`
+            : [await child(part.start), await child(part.start + part.count / 2)]
+                .filter(Boolean)
+                .join("\n");
+          staged.set(
+            key(part),
+            await compress(
+              source.trim(),
+              context,
+              { ...part, generation, operation: "incremental" },
+              true,
+            ),
+          );
+        }
+        await main.commit(async (tx) => {
+          if (((await tx.doc(Index, main.id)).generation ?? 0) !== generation)
+            throw new Error("Memory generation changed during repair");
+          for (const part of parts) {
+            const draft = await tx.doc(Nodes, main.id, storedKey(part, generation), { text: "" });
+            if (draft.text !== previous.get(key(part)))
+              throw new Error(`Memory node changed during repair: ${key(part)}`);
+            draft.text = staged.get(key(part))!;
+          }
+        }, context);
+        for (const part of parts)
+          cache.set(`${Nodes.definition.kind}:${storedKey(part, generation)}`, {
+            text: staged.get(key(part))!,
+          });
+        await refreshOverview(context);
+        await releaseTrackers(true);
+        return {
+          generation,
+          nodes: parts.map((part) => ({ ...part, text: staged.get(key(part))! })),
+        };
+      });
+    },
     async usage() {
       return {
         ...((await harness.snapshot(MemoryUsageDoc, main.id, BACKGROUND_CONTEXT)) ?? {

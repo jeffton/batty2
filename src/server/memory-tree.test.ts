@@ -57,6 +57,26 @@ test("authenticated prepared tree traverses to exact leaves without writes or mo
         401,
       );
     }
+    const repairRequest = {
+      method: "POST" as const,
+      url: "/api/memory/tree/repair",
+      payload: { generation: 0, roots: [{ start: 0, count: 2 }], dryRun: true },
+    };
+    expect((await app.inject(repairRequest)).statusCode).toBe(401);
+    const plan = await app.inject({ ...repairRequest, headers });
+    expect(plan.statusCode).toBe(200);
+    expect(plan.json().nodes).toEqual([
+      { start: 0, count: 2 },
+      { start: 0, count: 4 },
+      { start: 0, count: 8 },
+    ]);
+    for (const payload of [
+      {},
+      { ...repairRequest.payload, generation: 2 },
+      { ...repairRequest.payload, roots: [{ start: 1, count: 2 }] },
+      { ...repairRequest.payload, roots: [] },
+    ])
+      expect((await app.inject({ ...repairRequest, headers, payload })).statusCode).toBe(400);
     const response = await app.inject({ url: "/api/memory/tree", headers });
     expect(response.headers["cache-control"]).toBe("no-store");
     const overview = response.json();
