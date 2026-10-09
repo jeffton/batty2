@@ -4,6 +4,7 @@ import { onBeforeUnmount, ref, watch } from "vue";
 import FullPopover from "./FullPopover.vue";
 import SubagentSessionPopover from "./SubagentSessionPopover.vue";
 import {
+  updateCronDelivery,
   listRunningSubagents,
   listWorkspaceCronJobs,
   listWorkspaceCronRunLogs,
@@ -95,6 +96,21 @@ async function refresh() {
     }
   }
 }
+const savingDelivery = ref<string[]>([]);
+async function setDelivery(job: CronJob, event: Event) {
+  const delivery = (event.target as HTMLSelectElement).value as "direct" | "assistant";
+  savingDelivery.value.push(job.id);
+  try {
+    await updateCronDelivery(job.id, delivery);
+    job.delivery = delivery;
+    error.value = "";
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    (event.target as HTMLSelectElement).value = job.delivery ?? "assistant";
+    savingDelivery.value = savingDelivery.value.filter((id) => id !== job.id);
+  }
+}
 function toggle(event: Event) {
   open = (event as ToggleEvent).newState === "open";
   clearTimeout(timer);
@@ -174,6 +190,18 @@ onBeforeUnmount(() => {
       >
         <template v-if="tab === 'cron'">
           <article v-for="job in jobs" :key="job.id" class="cron-popover__run">
+            <label>
+              Delivery
+              <select
+                :value="job.delivery ?? 'assistant'"
+                :disabled="savingDelivery.includes(job.id)"
+                :aria-label="`Delivery for ${job.scheduleLabel}`"
+                @change="setDelivery(job, $event)"
+              >
+                <option value="direct">Direct</option>
+                <option value="assistant">Via assistant</option>
+              </select>
+            </label>
             <div class="cron-popover__run-content">
               <div class="cron-popover__run-heading">
                 <span class="cron-popover__status">{{ job.enabled ? "Enabled" : "Paused" }}</span>

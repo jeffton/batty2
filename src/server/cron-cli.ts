@@ -10,7 +10,7 @@ Options:
   --workspace ID --prompt TEXT --model PROVIDER/MODEL --thinking LEVEL
   --in DURATION | --at ISO_DATE | --every DURATION | --cron EXPRESSION
   --timezone ZONE --session MODE --daily-context true|false|chat-only
-  --enabled true|false --run-id ID --limit NUMBER
+  --delivery direct|assistant --enabled true|false --run-id ID --limit NUMBER
   --json FILE  Read request fields from JSON file (use - for stdin).
 Outputs JSON. Uses the running Batty2 service; does not start a scheduler.
 `;
@@ -34,6 +34,7 @@ export async function parseCronArgs(args: string[]) {
       session: { type: "string" },
       "daily-context": { type: "string" },
       enabled: { type: "string" },
+      delivery: { type: "string" },
       "run-id": { type: "string" },
       limit: { type: "string" },
       json: { type: "string" },
@@ -55,6 +56,11 @@ export async function parseCronArgs(args: string[]) {
     ["run-id", "runId"],
   ] as const) {
     if (values[flag] !== undefined) body[field] = values[flag];
+  }
+  if (values.delivery !== undefined) {
+    if (!["direct", "assistant"].includes(values.delivery))
+      throw new Error("--delivery requires direct or assistant");
+    body.delivery = values.delivery;
   }
   if (values.enabled !== undefined) {
     if (!["true", "false"].includes(values.enabled))

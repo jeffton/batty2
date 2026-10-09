@@ -293,8 +293,30 @@ export function normalizeMessage(
 
   if (message.role === "user") {
     const notice = decodeRuntimeNotice(message.content);
-    if (notice)
+    if (notice) {
+      const direct = notice.data?.directDelivery as { text: string } | undefined;
+      if (notice.kind === "cron" && direct) {
+        const artifacts = notice.data?.runtimeResultArtifacts as
+          | {
+              sentFiles?: SentFileDescriptor[];
+              sites?: SiteDescriptor[];
+              fileChanges?: AgentTurnFileChange[];
+            }
+          | undefined;
+        return {
+          id: messageId("assistant", message.timestamp, index),
+          role: "assistant",
+          timestamp: message.timestamp,
+          turnPhase: "final",
+          stopReason: "stop",
+          blocks: [{ type: "text", text: direct.text }],
+          sentFiles: artifacts?.sentFiles,
+          sites: artifacts?.sites,
+          fileChanges: artifacts?.fileChanges,
+        };
+      }
       return normalizeMessage(buildRuntimeNoticeMessage(notice, message.timestamp), index, options);
+    }
     return {
       id: messageId("user", message.timestamp, index),
       role: "user",

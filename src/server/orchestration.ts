@@ -98,7 +98,13 @@ export type CronSession = {
   kind: "new" | "daily-inline" | "main-inline" | "daily-detached" | "main-detached";
   includePreviousContext?: ContextMode;
 };
+export type CronDelivery = "direct" | "assistant";
+function validateDelivery(delivery?: CronDelivery) {
+  if (delivery !== undefined && !["direct", "assistant"].includes(delivery))
+    throw new Error("Invalid cron delivery mode");
+}
 export type CronJobInput = {
+  delivery?: CronDelivery;
   workspaceId?: string;
   enabled?: boolean;
   prompt: string;
@@ -108,6 +114,7 @@ export type CronJobInput = {
   session?: CronSession;
 };
 export type CronJob = {
+  delivery?: CronDelivery;
   id: string;
   workspaceId: string;
   enabled: boolean;
@@ -282,6 +289,7 @@ type RunChange = {
   thinkingLevel?: ModelThinkingLevel | null;
 };
 type DeliveryInput = {
+  delivery?: CronDelivery;
   workerId: string;
   childId: ConversationId;
   mainId: ConversationId;
@@ -671,6 +679,36 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
               });
               handled = true;
             }, ctx);
+          }
+          if (task.input.runId && task.input.delivery === "direct" && !failed) {
+            // Append without submit: even passive submissions wake a busy conversation.
+            // The receipt and entry commit together, making retries duplicate-free.
+            await runtime.commit(async (tx) => {
+              const receipt = await tx.doc(DeliveryRecord, String(task.id), {});
+              if (receipt.directDelivered) return;
+              await tx.appendEntry(targetId, {
+                kind: "batty.cron-result",
+                model: [
+                  {
+                    // Do not split an unfinished assistant tool-result group.
+                    role: "user",
+                    content: encodeRuntimeNotice({
+                      kind: "cron",
+                      text: `[cron ${task.input.workerId} completed output]\n${text}`,
+                      data: {
+                        directDelivery: { text },
+                        ...(artifacts ? { runtimeResultArtifacts: artifacts } : {}),
+                        cron: { sessionId: task.input.workerId, runId: task.input.runId! },
+                      },
+                    }),
+                    timestamp: runtime.now(),
+                  },
+                ],
+                data: { cron: { sessionId: task.input.workerId, runId: task.input.runId! } },
+              });
+              receipt.directDelivered = true;
+            }, ctx);
+            handled = true;
           }
           if (!handled) {
             const submission = await target.submit(
@@ -1103,7 +1141,9 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       try {
         const ws = await workspace(job.workspaceId);
         const agent = await main.agent(context);
-        const inline = job.session.kind === "daily-inline" || job.session.kind === "main-inline";
+        const inline =
+          job.delivery !== "direct" &&
+          (job.session.kind === "daily-inline" || job.session.kind === "main-inline");
         const prefix = inline
           ? []
           : await preparedContext(main.id, job.session.includePreviousContext ?? false, ws.id);
@@ -1148,12 +1188,22 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
                 ...buildCronRuntimeNotice({
                   scheduleLabel: JSON.stringify(job.schedule),
                   prompt: job.prompt,
-                  session: job.session,
+                  session:
+                    job.delivery === "direct" && job.session.kind.endsWith("inline")
+                      ? {
+                          ...job.session,
+                          kind:
+                            job.session.kind === "daily-inline"
+                              ? "daily-detached"
+                              : "main-detached",
+                        }
+                      : job.session,
                   now: new Date(now),
                 }),
                 data: { cron: { workspaceId: ws.id, cwd: ws.path, runId } },
               },
               report: !inline,
+              delivery: job.delivery ?? "assistant",
               runId,
               inline,
               change: { ...modelChange(job.model, job.thinkingLevel), cwd: ws.path } as RunChange,
@@ -1212,6 +1262,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     timer.unref();
   };
   const addJob = async (input: CronJobInput) => {
+    validateDelivery(input.delivery);
     if (!input.prompt.trim()) throw new Error("Cron prompt is required");
     modelChange(input.model, input.thinkingLevel);
     if (
@@ -1231,6 +1282,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       prompt: input.prompt,
       schedule,
       session: input.session ?? { kind: "new" },
+      delivery: input.delivery ?? "assistant",
       createdAt: now,
       updatedAt: now,
     };
@@ -1245,6 +1297,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     return job;
   };
   const importJob = async (input: CronJob) => {
+    validateDelivery(input.delivery);
     if (!input.id || !input.prompt.trim()) throw new Error("Cron id and prompt are required");
     if (typeof input.enabled !== "boolean") throw new Error("Cron enabled must be boolean");
     if (!Number.isFinite(input.createdAt) || !Number.isFinite(input.updatedAt))
@@ -1276,6 +1329,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       enabled: input.enabled,
       prompt: input.prompt,
       session: structuredClone(input.session),
+      ...(input.delivery !== undefined ? { delivery: input.delivery } : {}),
       schedule,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
@@ -1293,6 +1347,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
     return job;
   };
   const updateJob = async (id: string, input: Partial<CronJobInput>) => {
+    validateDelivery(input.delivery);
     modelChange(input.model, input.thinkingLevel);
     if (
       input.session &&
@@ -1316,6 +1371,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       if (input.model !== undefined) job.model = input.model;
       if (input.thinkingLevel !== undefined) job.thinkingLevel = input.thinkingLevel;
       if (input.session !== undefined) job.session = input.session;
+      if (input.delivery !== undefined) job.delivery = input.delivery;
       if (ws) job.workspaceId = ws.id;
       if (schedule) job.schedule = schedule;
       if (schedule || (input.enabled === true && job.nextAt === undefined))
@@ -1344,7 +1400,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const cron = defineTool({
     name: "cron",
     description:
-      "Manage durable scheduled turns. daily-inline/main-inline run in main without a daily reset; daily-detached/main-detached use fresh workers. Final cron outputs reach main; helper reports stay with their spawning parent.",
+      "Manage durable scheduled turns. daily-inline/main-inline run in main without a daily reset; daily-detached/main-detached use fresh workers. delivery=assistant (default) sends final output to main for an assistant turn or queued follow-up; delivery=direct displays output unchanged in main without an assistant turn (runs in a worker even with an inline session). NO_REPLY remains suppressed. Failures reach the assistant. Helper reports stay with their spawning parent.",
     replay: "unsafe",
     parameters: Type.Object({
       action: Type.String(),
@@ -1352,6 +1408,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       runId: Type.Optional(Type.String()),
       workspaceId: Type.Optional(Type.String()),
       enabled: Type.Optional(Type.Boolean()),
+      delivery: Type.Optional(Type.Union([Type.Literal("direct"), Type.Literal("assistant")])),
       prompt: Type.Optional(Type.String()),
       model: Type.Optional(Type.String()),
       thinkingLevel: Type.Optional(Type.String()),

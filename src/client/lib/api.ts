@@ -329,6 +329,17 @@ export function setBattyAgentsFile(content: string): Promise<{ content: string }
   });
 }
 
+export function updateCronDelivery(
+  jobId: string,
+  delivery: "direct" | "assistant",
+): Promise<CronJob> {
+  return request("/api/cron", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "update", jobId, delivery }),
+  });
+}
+
 export function listWorkspaceCronJobs(workspaceId: string): Promise<CronJob[]> {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/cron-jobs`);
 }

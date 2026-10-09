@@ -38,6 +38,7 @@ export const DeliveryRecord = defineDocFamily<
     call?: { workerId: string; taskId: TaskId<string> };
     join?: TaskId;
     artifacts?: AgentTurnArtifacts & Record<string, JsonValue>;
+    directDelivered?: boolean;
   },
   Record<string, never>
 >({

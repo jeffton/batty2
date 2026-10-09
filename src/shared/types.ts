@@ -250,7 +250,10 @@ export interface CronJobState {
   lastSessionPath?: string;
 }
 
+export type CronDelivery = "direct" | "assistant";
+
 export interface CronJob {
+  delivery?: CronDelivery;
   id: string;
   workspaceId: string;
   enabled: boolean;
@@ -266,6 +269,7 @@ export interface CronJob {
 }
 
 export interface CreateCronJobInput {
+  delivery?: CronDelivery;
   workspaceId: string;
   enabled?: boolean;
   prompt: string;
@@ -276,6 +280,7 @@ export interface CreateCronJobInput {
 }
 
 export interface UpdateCronJobInput {
+  delivery?: CronDelivery;
   workspaceId?: string;
   enabled?: boolean;
   prompt?: string;

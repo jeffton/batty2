@@ -5,6 +5,7 @@ import * as api from "@/client/lib/api";
 import type { CronJob, CronRunLog, RunningSubagent } from "@/shared/types";
 
 vi.mock("@/client/lib/api", () => ({
+  updateCronDelivery: vi.fn(),
   listRunningSubagents: vi.fn(),
   listWorkspaceCronJobs: vi.fn(),
   listWorkspaceCronRunLogs: vi.fn(),
@@ -96,6 +97,18 @@ describe("cron and subagents popover", () => {
       expect(cronPanel.text()).toContain("Job in first");
       expect(cronPanel.text()).toContain("Job in second");
       expect(cronPanel.text()).toContain("Second workspace");
+      vi.mocked(api.updateCronDelivery).mockResolvedValue({ ...job("first"), delivery: "direct" });
+      const delivery = cronPanel.findAll("select")[0]!;
+      expect((delivery.element as HTMLSelectElement).value).toBe("assistant");
+      await delivery.setValue("direct");
+      await flushPromises();
+      expect(api.updateCronDelivery).toHaveBeenCalledWith("first", "direct");
+      expect((delivery.element as HTMLSelectElement).value).toBe("direct");
+      vi.mocked(api.updateCronDelivery).mockRejectedValue(new Error("Save failed"));
+      await delivery.setValue("assistant");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toBe("Save failed");
+      expect((delivery.element as HTMLSelectElement).value).toBe("direct");
       await wrapper.get("#cron-test-subagents-tab").trigger("click");
       const agentPanel = wrapper.get("#cron-test-subagents-panel");
       expect(agentPanel.text()).toContain(
