@@ -9,11 +9,10 @@ releases_dir=/opt/batty2/releases
 minimum_free_kb=${BATTY2_DEPLOY_MIN_FREE_KB:-4194304}
 preflight_disk /opt/batty2 "$minimum_free_kb"
 preflight_disk /tmp "$minimum_free_kb"
-command -v trash >/dev/null
 
 revision=$(git rev-parse --short HEAD)
 build=$(mktemp -d /tmp/batty2-build.XXXXXX)
-trap 'trash "$build"' EXIT
+trap 'rm -rf -- "$build"' EXIT
 git archive HEAD | tar -x -C "$build"
 (
   cd "$build"

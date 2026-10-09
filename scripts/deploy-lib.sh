@@ -95,12 +95,12 @@ prune_releases() {
     # Pre-manifest releases predate the health marker. Keep two legacy rollback
     # candidates during migration; new unverified releases are never retained.
     if [[ ! -f "$release/HEALTHY" && -f "$release/CLIENT_ASSETS.txt" ]]; then
-      trash "$release"
+      rm -rf -- "$release"
       continue
     fi
     keep=$((keep + 1))
     if (( keep > 2 )); then
-      trash "$release"
+      rm -rf -- "$release"
     fi
   done < <(newest_release_paths "$releases_dir")
 }

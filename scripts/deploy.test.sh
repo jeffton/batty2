@@ -3,7 +3,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 source "$script_dir/deploy-lib.sh"
 tmp=$(mktemp -d)
-trap 'trash "$tmp"' EXIT
+trap 'rm -rf -- "$tmp"' EXIT
 
 # Disk preflight accepts a realistic threshold and rejects an impossible one.
 available_kb=$(df -Pk "$tmp" | awk 'NR == 2 { print $4 }')
@@ -75,23 +75,34 @@ copy_retained_client_assets "$failed_releases" "$failed_releases/next.3" "$tmp/f
 [[ -f "$failed_releases/next.3/dist/client/assets/good.js" ]]
 [[ ! -e "$failed_releases/next.3/dist/client/assets/failed.js" ]]
 
-# Pruning keeps current plus two rollback releases; removal goes through trash.
-mkdir -p "$tmp/bin" "$tmp/trash-bin"
+# Pruning permanently removes obsolete releases without invoking trash.
+mkdir -p "$tmp/bin"
 cat > "$tmp/bin/trash" <<'MOCK'
 #!/usr/bin/env bash
-set -euo pipefail
-mv "$1" "$TRASH_CAPTURE/$(basename "$1")"
+exit 99
 MOCK
 chmod +x "$tmp/bin/trash"
 for release in r1.1 r2.2 r3.3 r4.4; do mkdir -p "$releases/$release"; done
 touch "$releases/r2.2/HEALTHY" "$releases/r3.3/HEALTHY"
 ln -s "$releases/r4.4" "$tmp/current"
-TRASH_CAPTURE="$tmp/trash-bin" PATH="$tmp/bin:$PATH" \
-  prune_releases "$releases" "$tmp/current"
+mkdir -p "$releases/failed.5"
+printf 'failed.js\n' > "$releases/failed.5/CLIENT_ASSETS.txt"
+PATH="$tmp/bin:$PATH" prune_releases "$releases" "$tmp/current"
 [[ -d "$releases/r4.4" ]]
 [[ -d "$releases/r3.3" ]]
 [[ -d "$releases/r2.2" ]]
 [[ ! -e "$releases/r1.1" ]]
-[[ -d "$tmp/trash-bin/r1.1" ]]
+[[ ! -e "$releases/failed.5" ]]
+
+# An older active release is protected independently of rollback ordering.
+ln -sfn "$releases/r2.2" "$tmp/current"
+mkdir -p "$releases/r5.5" "$releases/r6.6"
+touch "$releases/r5.5/HEALTHY" "$releases/r6.6/HEALTHY"
+PATH="$tmp/bin:$PATH" prune_releases "$releases" "$tmp/current"
+[[ -d "$releases/r2.2" ]]
+[[ -d "$releases/r5.5" ]]
+[[ -d "$releases/r6.6" ]]
+[[ ! -e "$releases/r3.3" ]]
+[[ ! -e "$releases/r4.4" ]]
 
 printf 'deploy lifecycle tests passed\n'
