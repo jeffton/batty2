@@ -4,6 +4,7 @@ import { computed, ref, useId } from "vue";
 import SubagentSessionPopover from "@/client/components/SubagentSessionPopover.vue";
 import CodeBlock from "@/client/components/CodeBlock.vue";
 import { createHeadView } from "@/client/lib/tool-output";
+import { subagentSessionId } from "@/client/lib/subagent-session";
 import type { ToolExecutionDetails, UiContentBlock } from "@/shared/types";
 
 const props = withDefaults(
@@ -25,7 +26,21 @@ function popoverId(index: number): string {
 
 const expanded = ref(false);
 const codeView = computed(() => createHeadView(props.code.replaceAll("\r", "").trimEnd(), 10));
-const calls = computed(() => props.details?.calls ?? []);
+const calls = computed(() =>
+  (props.details?.calls ?? []).map((call) => {
+    let sessionId: string | undefined;
+    if (call.name === "subagent") {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(call.args) ?? {};
+      } catch {
+        // Invalid tool arguments are displayed too; they contain no usable ID.
+      }
+      sessionId = subagentSessionId(call.subagent?.sessionId, args);
+    }
+    return { ...call, sessionId };
+  }),
+);
 const visibleCalls = computed(() => (expanded.value ? calls.value : calls.value.slice(-8)));
 const output = computed(() => {
   if (props.status === "running") return "";
@@ -88,11 +103,7 @@ function cost(value: number): string {
             {{ duration(call.durationMs) }}
           </span>
           <span v-if="call.cost" class="codemode-display__muted">{{ cost(call.cost) }}</span>
-          <template
-            v-if="
-              props.allowSessionPopovers && call.name === 'subagent' && call.subagent?.sessionId
-            "
-          >
+          <template v-if="props.allowSessionPopovers && call.sessionId">
             <button
               type="button"
               class="codemode-display__session-btn"
@@ -101,10 +112,7 @@ function cost(value: number): string {
               <PanelRightOpen :size="14" />
               {{ call.status === "running" ? "Open live session" : "Open session" }}
             </button>
-            <SubagentSessionPopover
-              :popover-id="popoverId(index)"
-              :session-id="call.subagent.sessionId"
-            />
+            <SubagentSessionPopover :popover-id="popoverId(index)" :session-id="call.sessionId" />
           </template>
         </div>
         <div v-if="expanded && call.error" class="codemode-display__error">{{ call.error }}</div>

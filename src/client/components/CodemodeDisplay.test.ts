@@ -25,6 +25,71 @@ const calls: CodemodeCall[] = [
 ];
 
 describe("codemode runtime call display", () => {
+  it.each(["run", "await", "queue", "resume", "steer", "stop"])(
+    "opens subagent sessions from explicit arguments for %s in every call state",
+    (action) => {
+      for (const status of ["running", "ok", "error", "cancelled"] as const) {
+        const wrapper = mount(CodemodeDisplay, {
+          props: {
+            code: "",
+            blocks: [],
+            compact: false,
+            details: {
+              calls: [
+                {
+                  id: "child-call",
+                  name: "subagent",
+                  status,
+                  args: JSON.stringify({ action, sessionId: "worker-42" }),
+                },
+              ],
+            },
+          },
+          global: { stubs: { CodeBlock: true, SubagentSessionPopover: true } },
+        });
+        const popover = wrapper.getComponent({ name: "SubagentSessionPopover" });
+        expect(popover.props("sessionId")).toBe("worker-42");
+        expect(wrapper.get(".codemode-display__session-btn").attributes("popovertarget")).toBe(
+          popover.props("popoverId"),
+        );
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("prioritizes returned IDs and ignores missing IDs and malformed arguments", async () => {
+    const wrapper = mount(CodemodeDisplay, {
+      props: {
+        code: "",
+        blocks: [],
+        compact: false,
+        details: {
+          calls: [
+            {
+              id: "created",
+              name: "subagent",
+              status: "ok",
+              args: '{"sessionId":"requested"}',
+              subagent: { sessionId: "created" },
+            },
+            { id: "no-id", name: "subagent", status: "ok", args: '{"action":"run"}' },
+            { id: "bad-args", name: "subagent", status: "error", args: "undefined" },
+            { id: "blank-id", name: "subagent", status: "error", args: '{"sessionId":" "}' },
+            { id: "other-tool", name: "cron", status: "ok", args: '{"sessionId":"cron"}' },
+          ],
+        },
+      },
+      global: { stubs: { CodeBlock: true, SubagentSessionPopover: true } },
+    });
+    expect(wrapper.findAll(".codemode-display__session-btn")).toHaveLength(1);
+    expect(wrapper.getComponent({ name: "SubagentSessionPopover" }).props("sessionId")).toBe(
+      "created",
+    );
+    await wrapper.setProps({ allowSessionPopovers: false });
+    expect(wrapper.find(".codemode-display__session-btn").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("renders successful and faulted calls, arguments, timing and expanded errors", async () => {
     const wrapper = mount(CodemodeDisplay, {
       props: {

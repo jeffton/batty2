@@ -13,6 +13,7 @@ import ToolCallMeta from "@/client/components/ToolCallMeta.vue";
 import { formatValue, languageFromPath } from "@/client/lib/code-format";
 import { createHeadView, createToolOutputView } from "@/client/lib/tool-output";
 import { hasToolResultContent } from "@/client/lib/transcript";
+import { subagentSessionId as resolveSubagentSessionId } from "@/client/lib/subagent-session";
 import { isPiShellToolName } from "@/shared/pi-tools";
 import type { SentFileDescriptor, ToolExecutionDetails, UiContentBlock } from "@/shared/types";
 
@@ -95,9 +96,7 @@ const subagentRespondIn = computed(() => {
       : undefined;
 });
 const subagentSessionId = computed(() =>
-  typeof subagentDetails.value?.sessionId === "string"
-    ? subagentDetails.value.sessionId
-    : undefined,
+  resolveSubagentSessionId(subagentDetails.value?.sessionId, props.arguments),
 );
 const subagentPopoverId = computed(() => {
   const stableId = props.toolCallId ?? subagentSessionId.value;
