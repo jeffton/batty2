@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import ChatMessage from "./ChatMessage.vue";
+import DeleteButton from "./DeleteButton.vue";
+import ModelConfigPopover from "./ModelConfigPopover.vue";
+import ProviderUsageIndicator from "./ProviderUsageIndicator.vue";
 import type { UiMessage } from "@/shared/types";
 import "@/client/styles.css";
 const artifacts = {
@@ -41,6 +44,18 @@ messages.push({
 });
 </script>
 <template>
+  <nav>
+    <DeleteButton label="Delete fixture" />
+    <button popovertarget="fixture-model" style="anchor-name: --fixture-model">Choose model</button>
+    <ModelConfigPopover
+      popover-id="fixture-model"
+      anchor-name="--fixture-model"
+      :models="[]"
+      current-thinking-level="medium"
+      :thinking-options="[]"
+    />
+    <ProviderUsageIndicator model="fixture/model" />
+  </nav>
   <main style="padding: 12px; max-width: 800px; height: 100vh; overflow-y: auto">
     <ChatMessage
       v-for="message in messages"

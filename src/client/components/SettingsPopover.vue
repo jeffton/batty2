@@ -934,11 +934,11 @@ function handlePopoverToggle(event: Event): void {
   margin-bottom: 8px;
 }
 
-.settings-popover {
+:global(.settings-popover) {
   background: var(--color-bg-panel-strong);
 }
 
-.settings-popover :deep(.full-popover__header) {
+:global(.settings-popover .full-popover__header) {
   border-bottom: 0;
   background: var(--color-bg-panel-strong);
 }

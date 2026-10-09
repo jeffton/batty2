@@ -147,10 +147,10 @@ onUnmounted(() => clearInterval(clock));
   color: var(--color-warning);
   font-size: 0.8rem;
 }
-.usage-details {
+:global(.usage-details) {
   display: none;
 }
-.usage-details:popover-open {
+:global(.usage-details:popover-open) {
   position: fixed;
   position-area: block-end span-inline-start;
   position-try-fallbacks:

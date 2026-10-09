@@ -86,7 +86,7 @@ onBeforeUnmount(removeFromStack);
 </template>
 
 <style scoped>
-.full-popover {
+:global(.full-popover) {
   inset: calc(var(--safe-area-top) + 1rem + var(--full-popover-stack-offset))
     calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem)
     calc(var(--safe-area-left) + 1rem);
@@ -104,12 +104,12 @@ onBeforeUnmount(removeFromStack);
   overflow: hidden;
 }
 
-.full-popover:popover-open {
+:global(.full-popover:popover-open) {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.full-popover::backdrop {
+:global(.full-popover::backdrop) {
   background: rgb(0 0 0 / 0.22);
 }
 

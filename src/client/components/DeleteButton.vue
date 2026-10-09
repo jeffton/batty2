@@ -72,11 +72,11 @@ function confirm(): void {
 </template>
 
 <style scoped>
-.delete-confirmation {
+:global(.delete-confirmation) {
   display: none;
 }
 
-.delete-confirmation:popover-open {
+:global(.delete-confirmation:popover-open) {
   position: fixed;
   position-area: block-end span-inline-start;
   position-try-fallbacks:

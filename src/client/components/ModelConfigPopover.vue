@@ -96,11 +96,11 @@ watch(
 </template>
 
 <style scoped>
-.mc-popover {
+:global(.mc-popover) {
   display: none;
 }
 
-.mc-popover:popover-open {
+:global(.mc-popover:popover-open) {
   position: fixed;
   position-area: block-end span-inline-start;
   position-try-fallbacks:
@@ -123,7 +123,7 @@ watch(
   gap: 0.35rem;
 }
 
-.mc-popover--up:popover-open {
+:global(.mc-popover--up:popover-open) {
   position-area: normal;
   position-try-fallbacks: none;
   top: auto;
@@ -133,7 +133,7 @@ watch(
   margin: 0;
 }
 
-.mc-popover::backdrop {
+:global(.mc-popover::backdrop) {
   background: var(--color-backdrop);
 }
 

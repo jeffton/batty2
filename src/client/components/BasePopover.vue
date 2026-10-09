@@ -36,6 +36,8 @@ defineExpose({ element, showPopover, hidePopover, togglePopover });
 </script>
 
 <template>
+  <!-- Teleport isolates ancestor styles. Callers must use :global for their
+       unique root class: Vue does not forward caller scope IDs through Teleport. -->
   <Teleport to="body">
     <component
       :is="props.as"

@@ -24,6 +24,8 @@ afterAll(async () => {
 });
 for (const { width, colorScheme } of [
   { width: 390, colorScheme: "light" as const },
+  { width: 390, colorScheme: "dark" as const },
+  { width: 1100, colorScheme: "light" as const },
   { width: 1100, colorScheme: "dark" as const },
 ]) {
   test(`cron, subagent and ordinary reply artifacts render directly at ${width}px (${colorScheme})`, async () => {
@@ -73,6 +75,35 @@ for (const { width, colorScheme } of [
         await diff.click();
         const popover = page.locator(".agent-turn-diff-popover:popover-open");
         await popover.waitFor();
+        const layout = await popover.evaluate((element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return {
+            display: style.display,
+            borderWidth: style.borderWidth,
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+          };
+        });
+        expect(layout, JSON.stringify(layout)).toMatchObject({
+          display: "grid",
+          borderWidth: "1px",
+        });
+        const inset = await page.evaluate(() =>
+          Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+        );
+        expect(layout.left).toBe(inset);
+        expect(layout.top).toBe(inset);
+        expect(layout.right).toBe(width - inset);
+        expect(layout.bottom).toBe(900 - inset);
+        expect(layout.width).toBe(width - 2 * inset);
+        await popover.locator(".agent-turn-diff-popover__viewer diffs-container").waitFor();
+        await page.screenshot({
+          path: `/tmp/batty2-diff-popover-${width}-${colorScheme}.png`,
+        });
         await popover.getByRole("button", { name: "Close code changes" }).click();
       }
       expect(await page.getByRole("button", { name: "Open cron session" }).count()).toBe(1);
@@ -90,7 +121,43 @@ for (const { width, colorScheme } of [
     }
   }, 30_000);
 
-  test(`runtime notice popovers isolate styles and preserve nested navigation (${colorScheme})`, async () => {
+  test(`teleported model, usage and delete popovers retain their layout at ${width}px (${colorScheme})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, colorScheme });
+    page.setDefaultTimeout(5000);
+    await page.route("**/api/provider-usage?*", (route) =>
+      route.fulfill({ status: 503, json: { error: "Fixture usage unavailable" } }),
+    );
+    try {
+      await page.goto(url);
+      for (const { name, selector } of [
+        { name: "Delete fixture", selector: ".delete-confirmation" },
+        { name: "Choose model", selector: ".mc-popover" },
+        { name: "Usage limits unavailable", selector: ".usage-details" },
+      ]) {
+        await page.getByRole("button", { name, exact: true }).click();
+        const popover = page.locator(`${selector}:popover-open`);
+        await popover.waitFor();
+        expect(await popover.evaluate((element) => element.parentElement === document.body)).toBe(
+          true,
+        );
+        const style = await popover.evaluate((element) => {
+          const computed = getComputedStyle(element);
+          return { display: computed.display, borderWidth: computed.borderWidth };
+        });
+        expect(style).toEqual({ display: "flex", borderWidth: "1px" });
+        const box = (await popover.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+        expect(box.y + box.height).toBeLessThanOrEqual(900);
+        await page.keyboard.press("Escape");
+      }
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test(`runtime notice popovers isolate styles and preserve nested navigation at ${width}px (${colorScheme})`, async () => {
     const page = await browser.newPage({ viewport: { width, height: 900 }, colorScheme });
     page.setDefaultTimeout(5000);
     await page.route("**/api/sessions/42", (route) =>
@@ -150,6 +217,18 @@ for (const { width, colorScheme } of [
       await parent.getByRole("button", { name: "Open subagent session", exact: true }).click();
       const child = page.locator("#subagent-notice-popover-43");
       await child.locator(".transcript").waitFor();
+      const inset = await page.evaluate(() =>
+        Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      );
+      for (const popover of [parent, child]) {
+        const box = (await popover.boundingBox())!;
+        expect(box.x).toBe(inset);
+        expect(box.width).toBe(width - 2 * inset);
+        expect(box.y).toBeGreaterThanOrEqual(inset);
+        expect(box.y + box.height).toBe(900 - inset);
+        expect(await popover.evaluate((element) => getComputedStyle(element).display)).toBe("grid");
+      }
+      await page.screenshot({ path: `/tmp/batty2-nested-popover-${width}-${colorScheme}.png` });
       expect(await parent.evaluate((element) => element.matches(":popover-open"))).toBe(true);
       expect(await child.evaluate((element) => element.matches(":popover-open"))).toBe(true);
       await child.getByRole("button", { name: "Close subagent transcript" }).click();
