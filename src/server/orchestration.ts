@@ -857,7 +857,7 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
   const subagent = defineTool({
     name: "subagent",
     description:
-      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async and main await yields its turn. Async results go to the spawning parent. In workers and cron turns, await durably joins an owned child and returns its final result in the tool call, suppressing its pending separate report. Other helper reports wait until joined or the parent turn finishes. The parent continues processing; only its final cron output reaches main. Start multiple async helpers before awaiting to run them in parallel.",
+      "Run, await, queue, resume, steer or stop durable workers. Main-started workers always run async and main await yields its turn. Async results go to the spawning parent. In workers and cron turns, await durably joins an owned child and returns its final result in the tool call, suppressing its pending separate report. Other helper reports wait until joined or the parent turn finishes. The parent continues processing; only its final cron output reaches main. Start multiple async helpers before awaiting to run them in parallel. Reuse the Session ID returned by this tool for await, queue, resume, steer or stop; never guess an ID or use a memory-entry ID.",
     replay: "safe",
     parameters: Type.Object({
       action: Type.Union(
@@ -925,9 +925,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
         const artifacts = (await api.snapshot(DeliveryRecord, String(target), ctx))?.artifacts;
         return {
           ...reply(
-            settled.state.outcome.status === "completed"
-              ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
-              : `Subagent ${settled.state.outcome.status}`,
+            `Subagent ${settled.state.outcome.status === "completed" ? "result" : settled.state.outcome.status}. Session ID: ${workerId}\n\n${
+              settled.state.outcome.status === "completed"
+                ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
+                : ""
+            }`.trimEnd(),
           ),
           details: artifacts ?? {},
         };
@@ -1066,9 +1068,11 @@ export function createOrchestration(input: OrchestrationConfig | AppConfig = {})
       const artifacts = (await api.snapshot(DeliveryRecord, String(result.taskId), ctx))?.artifacts;
       return {
         ...reply(
-          settled.state.outcome.status === "completed"
-            ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
-            : `Subagent ${settled.state.outcome.status}`,
+          `Subagent ${settled.state.outcome.status === "completed" ? "result" : settled.state.outcome.status}. Session ID: ${result.workerId}\n\n${
+            settled.state.outcome.status === "completed"
+              ? reportWithAttachments(settled.state.outcome.result, artifacts?.sentFiles)
+              : ""
+          }`.trimEnd(),
         ),
         details: {
           conversationId: Number(result.workerId),

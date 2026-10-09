@@ -1294,42 +1294,78 @@ test("async reports steer a busy main before its final reply", async () => {
   expect(Object.values((await orchestrationHistory(harness))!.workers)).toHaveLength(1);
 }, 15000);
 
-test("worker-started synchronous delegation still returns the result in its tool call", async () => {
-  const { faux, orchestration, open } = await fixture();
-  const { harness, main } = await open();
-  faux.setResponses(
-    Array.from({ length: 25 }, () => (request) => {
-      const last = request.messages.findLast((m) => m.role !== "system")!;
-      const text = JSON.stringify(last.content);
-      if (last.role === "user" && text.includes("launch sync preservation"))
-        return fauxAssistantMessage(
-          [fauxToolCall("subagent", { action: "run", prompt: "outer sync worker" })],
-          { stopReason: "toolUse" },
-        );
-      if (last.role === "user" && text.includes("outer sync worker"))
-        return fauxAssistantMessage(
-          [fauxToolCall("subagent", { action: "run", async: false, prompt: "inner sync worker" })],
-          { stopReason: "toolUse" },
-        );
-      if (last.role === "user" && text.includes("inner sync worker"))
-        return fauxAssistantMessage([fauxText("nested synchronous answer")]);
-      return fauxAssistantMessage([fauxText("outer completed")]);
-    }),
-  );
-  await (
-    await main.submit({ type: "input", content: "launch sync preservation" }, context)
-  ).wait(context);
-  await until(async () => (await orchestration.listRunning()).length === 0);
-  const outer = Object.values((await orchestrationHistory(harness))!.workers).find(
-    (w) => w.parentId === main.id,
-  )!;
-  const messages = (await (await harness.conversation(outer.id, context))!.context(context))
-    .messages;
-  expect(messages.find((m) => m.role === "toolResult" && m.toolName === "subagent")).toMatchObject({
-    content: [{ type: "text", text: "nested synchronous answer" }],
-    details: { subagent: { async: false, respondIn: "tool-call" } },
-  });
-}, 15000);
+test.each(
+  [false, true].flatMap((awaitChild) => [false, true].map((fail) => ({ awaitChild, fail }))),
+)(
+  "worker delegation exposes session ID ($awaitChild, failed=$fail)",
+  async ({ awaitChild, fail }) => {
+    const { faux, orchestration, open } = await fixture(10000, () => {});
+    const { harness, main } = await open();
+    faux.setResponses(
+      Array.from({ length: 25 }, () => (request) => {
+        const last = request.messages.findLast((m) => m.role !== "system")!;
+        const text = JSON.stringify(last.content);
+        if (last.role === "user" && text.includes("launch sync preservation"))
+          return fauxAssistantMessage(
+            [fauxToolCall("subagent", { action: "run", prompt: "outer sync worker" })],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "user" && text.includes("outer sync worker"))
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("subagent", {
+                action: "run",
+                async: awaitChild,
+                prompt: "inner sync worker",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "toolResult" && text.includes("Started. Session ID:"))
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("subagent", {
+                action: "await",
+                sessionId: text.match(/Session ID: (\d+)/)![1]!,
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        if (last.role === "user" && text.includes("inner sync worker")) {
+          if (fail) throw new Error("inner provider failure");
+          return fauxAssistantMessage([fauxText("nested synchronous answer")]);
+        }
+        return fauxAssistantMessage([fauxText("outer completed")]);
+      }),
+    );
+    await (
+      await main.submit({ type: "input", content: "launch sync preservation" }, context)
+    ).wait(context);
+    await until(async () => (await orchestration.listRunning()).length === 0);
+    const outer = Object.values((await orchestrationHistory(harness))!.workers).find(
+      (w) => w.parentId === main.id,
+    )!;
+    const messages = (await (await harness.conversation(outer.id, context))!.context(context))
+      .messages;
+    const inner = Object.values((await orchestrationHistory(harness))!.workers).find(
+      (w) => w.parentId === outer.id,
+    )!;
+    const result = messages.findLast((m) => m.role === "toolResult" && m.toolName === "subagent")!;
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: fail
+          ? `Subagent result. Session ID: ${inner.id}\n\nTask ${inner.id} failed: model_error`
+          : `Subagent result. Session ID: ${inner.id}\n\nnested synchronous answer`,
+      },
+    ]);
+    if (!awaitChild)
+      expect(result).toMatchObject({
+        details: { subagent: { async: false, respondIn: "tool-call" } },
+      });
+  },
+  15000,
+);
 
 test.each(
   ([false, true] as const).flatMap((sync) =>
