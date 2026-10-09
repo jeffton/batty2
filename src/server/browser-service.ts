@@ -216,6 +216,7 @@ function formatEvaluationResult(value: unknown): string {
 export class BrowserService {
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly queues = new Map<string, Promise<void>>();
+  private readonly activeCalls = new Set<string>();
   private readonly lifecycleQueues = new Map<string, Promise<void>>();
   private readonly epochs = new Map<string, number>();
   private disposed = false;
@@ -244,8 +245,8 @@ export class BrowserService {
     return await this.abortable(
       this.serialized(sessionId, async () => {
         signal?.throwIfAborted();
-        // Registering the action queue protects queued/running browser calls;
-        // admission waits for any expiry already closing the old instance.
+        // Active calls protect the browser; admission waits for any expiry
+        // already closing the old instance.
         await this.withSessionLifecycle(sessionId, async () => {
           if (await this.hasSession(sessionId)) await this.touchSession(sessionId);
         });
@@ -376,7 +377,7 @@ export class BrowserService {
   /** Browser activity, not conversation/task status, determines idle expiry. */
   async expireIdleSession(sessionId: string, retentionMs: number, now = Date.now()): Promise<void> {
     await this.withSessionLifecycle(sessionId, async () => {
-      if (this.queues.has(sessionId) || !(await this.hasSession(sessionId))) return;
+      if (this.activeCalls.has(sessionId) || !(await this.hasSession(sessionId))) return;
       const directory = browserSessionDirectory(this.persistenceRoot, sessionId);
       const launch = await fs.stat(path.join(directory, "launch.json"));
       const registry = await fs.stat(path.join(directory, "registry.json")).catch((error) => {
@@ -386,7 +387,7 @@ export class BrowserService {
       // Registry mtime covers browser use before launch.json was touched on actions.
       // Both timestamps survive restart; reconnect alone does not reset expiry.
       const lastUsed = Math.max(launch.mtimeMs, registry?.mtimeMs ?? launch.mtimeMs);
-      if (!this.queues.has(sessionId) && now - lastUsed >= retentionMs)
+      if (!this.activeCalls.has(sessionId) && now - lastUsed >= retentionMs)
         await this.closeSession(sessionId);
     });
   }
@@ -915,9 +916,11 @@ export class BrowserService {
     });
     queues.set(sessionId, current);
     await previous;
+    if (queues === this.queues) this.activeCalls.add(sessionId);
     try {
       return await operation();
     } finally {
+      if (queues === this.queues) this.activeCalls.delete(sessionId);
       release();
       if (queues.get(sessionId) === current) queues.delete(sessionId);
     }

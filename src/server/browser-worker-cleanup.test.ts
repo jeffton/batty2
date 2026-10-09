@@ -54,6 +54,73 @@ test("resume admission cannot interleave with expiry reading persisted activity"
   }
 });
 
+test("queued browser calls do not prevent expiry and fail if their browser expires", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-queued-"));
+  const service = new BrowserService(undefined, 4, root);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queues = (service as unknown as { queues: Map<string, Promise<void>> }).queues;
+  try {
+    const launch = path.join(browserSessionDirectory(root, "worker"), "launch.json");
+    await writeBrowserJson(launch, { useTailscale: false });
+    await fs.utimes(launch, new Date(0), new Date(0));
+    // Hold admission without running a browser action.
+    queues.set("worker", gate);
+    const call = service.execute("worker", { action: "pages" });
+    const rejected = expect(call).rejects.toThrow(
+      'No active browser page. Start with action="open".',
+    );
+    await service.expireIdleSession("worker", 100, 1_000);
+    expect(await service.hasSession("worker")).toBe(false);
+    release();
+    await rejected;
+  } finally {
+    release();
+    await service.dispose();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an active browser call prevents expiry until it settles", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-active-"));
+  const service = new BrowserService(undefined, 4, root);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const launch = path.join(browserSessionDirectory(root, "worker"), "launch.json");
+  const createSession = vi.spyOn(
+    service as unknown as { createSession: () => Promise<never> },
+    "createSession",
+  );
+  let started = false;
+  try {
+    await writeBrowserJson(launch, { useTailscale: false });
+    createSession.mockImplementation(async () => {
+      started = true;
+      await gate;
+      throw new Error("Action interrupted");
+    });
+    const call = service.execute("worker", { action: "pages" });
+    const rejected = expect(call).rejects.toThrow("Action interrupted");
+    await vi.waitFor(() => expect(started).toBe(true));
+    await fs.utimes(launch, new Date(0), new Date(0));
+    await service.expireIdleSession("worker", 100, 1_000);
+    expect(await service.hasSession("worker")).toBe(true);
+    release();
+    await rejected;
+    await service.expireIdleSession("worker", 100, 1_000);
+    expect(await service.hasSession("worker")).toBe(false);
+  } finally {
+    release();
+    createSession.mockRestore();
+    await service.dispose();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("existing browser registry activity is retained, not just its older launch time", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "batty-browser-legacy-"));
   const service = new BrowserService(undefined, 4, root);
