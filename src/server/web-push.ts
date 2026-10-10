@@ -217,7 +217,7 @@ export class WebPushService {
 
   async notifyAgentCompleted(session: SessionState): Promise<void> {
     if (suppressAgentCompletionNotification(session)) {
-      console.info("Skipping web push notification for NO_REPLY completion", {
+      console.info("Skipping web push notification for suppressed completion", {
         sessionId: session.sessionId,
         workspaceId: session.workspaceId,
       });

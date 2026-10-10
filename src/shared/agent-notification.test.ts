@@ -117,6 +117,29 @@ describe("suppressAgentCompletionNotification", () => {
     expect(suppressAgentCompletionNotification(createSession(" NO_REPLY\n"))).toBe(true);
   });
 
+  it.each(["", " \n\t "])("suppresses empty successful completions with text %j", (text) => {
+    const session = createSession(text);
+    const assistant = session.messages[0]!;
+    if (assistant.role !== "assistant") throw new Error("Expected assistant");
+    assistant.stopReason = "stop";
+
+    expect(suppressAgentCompletionNotification(session)).toBe(true);
+    expect(buildAgentCompletionNotificationContent(session, "Roy").body).toBe("");
+  });
+
+  it("preserves real errors without assistant text", () => {
+    const session = createSession("");
+    const assistant = session.messages[0]!;
+    if (assistant.role !== "assistant") throw new Error("Expected assistant");
+    assistant.stopReason = "error";
+    assistant.errorMessage = "Provider request failed";
+
+    expect(suppressAgentCompletionNotification(session)).toBe(false);
+    expect(buildAgentCompletionNotificationContent(session, "Roy").body).toBe(
+      "Provider request failed",
+    );
+  });
+
   it("does not suppress normal assistant replies", () => {
     expect(suppressAgentCompletionNotification(createSession("Done shipping the feature."))).toBe(
       false,

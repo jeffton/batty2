@@ -82,7 +82,8 @@ export function suppressAgentCompletionNotification(session: SessionState): bool
     return false;
   }
 
-  return assistantNotificationText(latestMessage) === NO_REPLY_SENTINEL;
+  const text = assistantNotificationText(latestMessage);
+  return text === NO_REPLY_SENTINEL || (!text && !latestMessage.errorMessage?.trim());
 }
 
 export { markdownToNotificationText };
@@ -101,8 +102,10 @@ export function buildAgentCompletionNotificationContent(
 ): AgentCompletionNotificationContent {
   const assistant = latestAssistantMessage(session);
   const assistantText = assistantNotificationText(assistant);
-  const stopReason = assistant?.errorMessage || assistant?.stopReason;
-  const body = truncate(assistantText || stopReason || "", MAX_NOTIFICATION_BODY_LENGTH);
+  const body = truncate(
+    assistantText || assistant?.errorMessage || "",
+    MAX_NOTIFICATION_BODY_LENGTH,
+  );
 
   return {
     title: pushTitle,
