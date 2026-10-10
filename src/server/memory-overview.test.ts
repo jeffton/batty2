@@ -200,9 +200,9 @@ test.each([
       const code = `text(await searchTools("memory_overview"));
 text(ALL_TOOLS);
 let id = ${Number(line[1])}, n = ${Number(line[2])};
-while (n > 1) { text(await tools.zoom({id, n})); n /= 2; }
-text(await tools.zoom({id, n: 1}));
-text(await tools.date({id}));`;
+while (n > 1) { text(await tools.memory_zoom({id, n})); n /= 2; }
+text(await tools.memory_zoom({id, n: 1}));
+text(await tools.memory_date({id}));`;
       faux.setResponses(
         Array.from({ length: 40 }, () => (request) => {
           const last = request.messages.findLast((m) => m.role !== "system")!;
@@ -243,8 +243,8 @@ text(await tools.date({id}));`;
               const system = request.messages.findLast((message) => message.role === "system");
               const names = system?.toolsAdded?.map((tool) => tool.name) ?? [];
               expect(names).not.toContain("memory_overview");
-              expect(names.includes("zoom")).toBe(target === "roy");
-              expect(names.includes("date")).toBe(target === "roy");
+              expect(names.includes("memory_zoom")).toBe(target === "roy");
+              expect(names.includes("memory_date")).toBe(target === "roy");
               inspected.push(request.messages.length);
               return fauxAssistantMessage(
                 [
@@ -252,7 +252,7 @@ text(await tools.date({id}));`;
                     code:
                       target === "roy"
                         ? code
-                        : "text(ALL_TOOLS); text(await searchTools('main memory')); try { text(await describeTool('zoom')); } catch (error) { text(String(error)); }",
+                        : "text(ALL_TOOLS); text(await searchTools('main memory')); try { text(await describeTool('memory_zoom')); } catch (error) { text(String(error)); }",
                   }),
                 ],
                 {
@@ -268,8 +268,8 @@ text(await tools.date({id}));`;
               expect(output).toContain(`0:${secret}`);
               expect(output).toContain("1970-01-01T00:00:00.001Z");
             } else {
-              expect(output).not.toContain('"name":"zoom"');
-              expect(output).not.toContain('"name":"date"');
+              expect(output).not.toContain('"name":"memory_zoom"');
+              expect(output).not.toContain('"name":"memory_date"');
               expect(output).not.toContain(secret);
             }
             navigated++;

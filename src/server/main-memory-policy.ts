@@ -1,6 +1,14 @@
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 
-export const MAIN_MEMORY_TOOLS = new Set(["zoom", "date", "memory_search", "memory_overview"]);
+// Old names classify archived results only; they are not exposed tool aliases.
+export const MAIN_MEMORY_TOOLS = new Set([
+  "memory_search",
+  "memory_zoom",
+  "memory_date",
+  "memory_overview",
+  "zoom",
+  "date",
+]);
 
 export function isMainMemoryView(message: Message): boolean {
   if (message.role !== "user" || message.timestamp !== 0) return false;

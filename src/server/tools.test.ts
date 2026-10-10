@@ -114,7 +114,7 @@ describe("durable tool bridge", () => {
     await fs.writeFile(path.join(directory, "task.txt"), "ordinary task result");
     tools.registerTools([
       {
-        name: "zoom",
+        name: "memory_zoom",
         description: "main memory",
         parameters: Type.Object({}),
         replay: "safe",
@@ -122,18 +122,18 @@ describe("durable tool bridge", () => {
       },
     ]);
     const result = await run(
-      'const key = "zo" + "om"; const results = await Promise.all([tools.read({path: "task.txt"}), tools[key]({})]); for (const result of results) text(result);',
+      'const key = "memory_" + "zoom"; const results = await Promise.all([tools.read({path: "task.txt"}), tools[key]({})]); for (const result of results) text(result);',
     );
     const isolated = withoutMainMemory([result]);
     expect(JSON.stringify(isolated)).not.toContain("private decision");
     expect(JSON.stringify(isolated)).toContain("ordinary task result");
     const derived = await run(
-      'const secret = await tools.zoom({}); text(await tools.bash({command: "printf \'" + secret + "\'"}));',
+      'const secret = await tools.memory_zoom({}); text(await tools.bash({command: "printf \'" + secret + "\'"}));',
     );
     expect(withoutMainMemory([derived])).toEqual([]);
     await fs.writeFile(path.join(directory, "task.txt"), "ordinary".repeat(100));
     const truncated = await run(
-      '// @options: {"max_output_tokens": 10}\nconst results = await Promise.all([tools.read({path: "task.txt"}), tools.zoom({})]); for (const result of results) text(result);',
+      '// @options: {"max_output_tokens": 10}\nconst results = await Promise.all([tools.read({path: "task.txt"}), tools.memory_zoom({})]); for (const result of results) text(result);',
     );
     const copied = withoutMainMemory([truncated]);
     expect(copied).toHaveLength(1);

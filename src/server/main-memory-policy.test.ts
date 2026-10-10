@@ -3,10 +3,13 @@ import { fauxAssistantMessage, fauxToolCall, fauxText } from "@earendil-works/pi
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { isMainMemoryView, withoutMainMemory } from "./main-memory-policy";
 
-test("cross-workspace copies retain task context but exclude memory packets and navigation results", () => {
-  const zoom = fauxToolCall("zoom", { id: 1, n: 1 });
+test.each([
+  ["memory_zoom", "memory_date"],
+  ["zoom", "date"],
+])("cross-workspace copies exclude current and archived %s/%s results", (zoomName, dateName) => {
+  const zoom = fauxToolCall(zoomName, { id: 1, n: 1 });
   const code = fauxToolCall("codemode", {
-    code: "text(await tools.date({id: 1})); text(await tools.zoom({id: 1, n: 1}));",
+    code: "text(await tools.memory_date({id: 1})); text(await tools.memory_zoom({id: 1, n: 1}));",
   });
   const read = fauxToolCall("read", { path: "task.txt" });
   const result = (call: typeof zoom, text: string): ToolResultMessage => ({
@@ -26,7 +29,7 @@ test("cross-workspace copies retain task context but exclude memory packets and 
     fauxAssistantMessage([code]),
     {
       ...result(code, "private codemode memory"),
-      details: { calls: [{ name: "date" }, { name: "zoom" }] },
+      details: { calls: [{ name: dateName }, { name: zoomName }] },
     },
   ];
   const isolated = withoutMainMemory(messages);

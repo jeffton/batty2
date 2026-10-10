@@ -404,7 +404,7 @@ Use subagents when they are a natural fit for focused or parallel work.
 Main turns start with a prepared main-memory view, followed by the user's
 new message. Subagents and detached cron workers targeting workspace roy
 receive the prepared main-memory overview automatically, including fresh
-and nested workers. They can navigate it with zoom(id, n) and date(id).
+and nested workers. They can navigate it with memory_zoom(id, n) and memory_date(id).
 Workers targeting other workspaces have no main-memory overview or navigation
 tools. Explicitly copied parent context is a fixed snapshot of ordinary task
 context; main-memory content is excluded for non-Roy targets.
@@ -418,7 +418,10 @@ while you work, or as a new turn once yours has ended. So never wait
 for one (no sleep, no polling): go on, or end your turn and tell the
 user what is running.`;
 export const VIEW_DOC = `The main-memory view: the chat between Batty and the user, oldest first, inside
-<chat> tags, as one-line summaries. Each line is
+<chat> tags, as one-line summaries. This is the prepared view of the OptChat memory tree.
+The memory_search, memory_zoom and memory_date tools all address this same main history:
+search finds original messages, zoom opens tree nodes, and date retrieves original timestamps.
+Each line is
 
   id+n|text   the n messages from id on, summarized (newlines shown as spaces)
 
@@ -431,15 +434,15 @@ cover one message each; the older the messages, the more a line covers.
 A message not summarized yet shows as "(not summarized yet: zoom it)".
 No message appears in full, not even the last ones.
 
-Use memory_search({query}) to find forgotten topics in original text, then zoom the returned id. Literal words match together; tools/results are opt-in.
+Use memory_search({query}) to find forgotten topics in original text, then memory_zoom the returned id. Literal words match together; tools/results are opt-in.
 
-Navigating: zoom(id, n) opens line id+n into the two lines of n/2
-messages it was made from; zoom(id, 1) gives its uncompressed non-thought
+Navigating: memory_zoom(id, n) opens line id+n into the two lines of n/2
+messages it was made from; memory_zoom(id, 1) gives its uncompressed non-thought
 text projection. Images are represented by placeholders; complete message
 metadata, attachment bytes and reasoning remain in the permanent archive. Zoom
 whenever a summary only mentions something you need, such as what your
 last reply said, a decision, a past attempt or where a file is, before
-you act, guess or ask. date(id) gives the date and time of message id.`;
+you act, guess or ask. memory_date(id) gives the date and time of message id.`;
 const MEMORY_PROMPT = `${MASTER_PROMPT}\n\n${VIEW_DOC}`;
 export type MemoryConfig = {
   memoryLanguage?: string;
@@ -1149,7 +1152,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
       defineTool({
         name: "memory_search",
         description:
-          "Search original main-memory text using 1–12 literal words (all must match), newest first. Returns bounded snippets with original id/date/kind; use zoom(id, 1) for full text. Tools/results excluded unless includeTools is true. No semantic search.",
+          "Search original main-memory text using 1–12 literal words (all must match), newest first. Returns bounded snippets with original id/date/kind; use memory_zoom(id, 1) for full text. Tools/results excluded unless includeTools is true. No semantic search.",
         parameters: Type.Object({
           query: Type.String({ maxLength: 256 }),
           limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
@@ -1171,7 +1174,7 @@ export function createMemory(config: MemoryConfig, models: Models) {
         },
       }),
       defineTool({
-        name: "zoom",
+        name: "memory_zoom",
         description:
           "Open prepared main-memory line id+n into its two child summaries; n=1 returns uncompressed non-thought text, not full message metadata, image bytes or reasoning.",
         parameters: Type.Object({ id: Type.Integer(), n: Type.Integer() }),
@@ -1190,9 +1193,9 @@ export function createMemory(config: MemoryConfig, models: Models) {
         },
       }),
       defineTool({
-        name: "date",
+        name: "memory_date",
         description:
-          "The date and time of main-memory message id (from the prepared overview or zoom).",
+          "The date and time of main-memory message id (from the prepared overview or memory_zoom).",
         parameters: Type.Object({ id: Type.Integer() }),
         replay: "safe",
         execute: async ({ id }, api, context) => {

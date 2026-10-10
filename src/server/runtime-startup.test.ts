@@ -44,13 +44,17 @@ test("startup restores direct memory tools from a persisted pre-search allowlist
     runtime = undefined;
     runtime = await Runtime.open(config, { resume: false });
     const names = (await runtime.main.agent(context)).tools.map((tool) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(["memory_search", "zoom", "date", "codemode"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["memory_search", "memory_zoom", "memory_date", "codemode"]),
+    );
+    expect(names).not.toContain("zoom");
+    expect(names).not.toContain("date");
     runtime.models.registerNativeProvider(faux.provider);
     faux.setResponses([
       (request) => {
         const tools = getCurrentTools(request.messages);
         expect(tools.map((tool) => tool.name)).toEqual(
-          expect.arrayContaining(["memory_search", "zoom", "date"]),
+          expect.arrayContaining(["memory_search", "memory_zoom", "memory_date"]),
         );
         expect(tools.find((tool) => tool.name === "memory_search")?.parameters).toMatchObject({
           required: ["query"],
