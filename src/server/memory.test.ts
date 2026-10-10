@@ -997,7 +997,12 @@ test("generation-two repair deduplicates overlapping roots without touching olde
 
 test("language repair explicitly translates inherited foreign prose without changing originals", async () => {
   const f = await fixture();
-  const state = await f.open({ nodeBytes: 512, compress: undefined, memoryModel: "faux/faux-1" });
+  const state = await f.open({
+    nodeBytes: 512,
+    compress: undefined,
+    memoryModel: "faux/faux-1",
+    memoryLanguage: "Danish",
+  });
   cleanup.push(() => state.harness.close(context));
   await state.main.commit(async (tx) => {
     for (let i = 0; i < 2; i++)

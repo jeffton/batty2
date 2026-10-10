@@ -68,6 +68,9 @@ const appearanceTitle = ref("");
 const appearanceColor = ref<AppColor>("neutral");
 const appearanceSaving = ref(false);
 const appearanceError = ref("");
+const memoryLanguage = ref("");
+const memoryLanguageSaving = ref(false);
+const memoryLanguageError = ref("");
 const memoryModelSaving = ref(false);
 const memoryModelError = ref("");
 const memoryModelLabel = computed(
@@ -341,6 +344,27 @@ async function saveApiKey(providerId: "google" | "openrouter"): Promise<void> {
   }
 }
 
+watch(
+  () => store.settings.memoryLanguage,
+  (language) => {
+    memoryLanguage.value = language;
+  },
+  { immediate: true },
+);
+
+async function saveMemoryLanguage(): Promise<void> {
+  memoryLanguageSaving.value = true;
+  memoryLanguageError.value = "";
+  try {
+    await store.setMemoryLanguage(memoryLanguage.value.trim());
+    memoryLanguage.value = store.settings.memoryLanguage;
+  } catch (error) {
+    memoryLanguageError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    memoryLanguageSaving.value = false;
+  }
+}
+
 async function saveMemoryModel(modelId: string): Promise<void> {
   memoryModelSaving.value = true;
   memoryModelError.value = "";
@@ -606,6 +630,31 @@ function handlePopoverToggle(event: Event): void {
         <div v-if="memoryModelError" class="settings-popover__error" role="alert">
           {{ memoryModelError }}
         </div>
+        <form class="settings-popover__editor" @submit.prevent="saveMemoryLanguage">
+          <label class="settings-popover__field">
+            <span>Memory language</span>
+            <input
+              v-model="memoryLanguage"
+              class="settings-popover__input"
+              type="text"
+              autocomplete="off"
+              :disabled="memoryLanguageSaving"
+            />
+          </label>
+          <div class="settings-popover__help">
+            Used for new summaries. Existing memory stays unchanged.
+          </div>
+          <button
+            class="settings-popover__action settings-popover__action--primary"
+            type="submit"
+            :disabled="memoryLanguageSaving || !memoryLanguage.trim()"
+          >
+            <Save :size="14" /> {{ memoryLanguageSaving ? "Saving…" : "Save memory language" }}
+          </button>
+          <div v-if="memoryLanguageError" class="settings-popover__error" role="alert">
+            {{ memoryLanguageError }}
+          </div>
+        </form>
         <RouterLink to="/memory-tree" class="memory-tree-link" @click="closePopover">
           Memory tree
         </RouterLink>

@@ -36,6 +36,7 @@ function createConfig(webPushDir: string): AppConfig {
     pushTitle: "Roy",
     cronDailySessionStartTime: "04:00",
     memoryModel: "openai-codex/gpt-6-luna",
+    memoryLanguage: "English",
     browserMaxTabs: 16,
     baseUrl: "/",
     appTitle: "Batty",

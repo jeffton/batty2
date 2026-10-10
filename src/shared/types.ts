@@ -405,6 +405,7 @@ export interface ProviderUsage {
 
 export interface AppSettingsStatus {
   memoryModel: string;
+  memoryLanguage: string;
   pushTitle: string;
   memoryReasoning: string;
   braveSearchConfigured: boolean;

@@ -266,6 +266,13 @@ export function setPushTitle(title: string): Promise<AppSettingsStatus> {
   });
 }
 
+export function setMemoryLanguage(language: string): Promise<AppSettingsStatus> {
+  return request("/api/settings/memory-language", {
+    method: "POST",
+    body: JSON.stringify({ language }),
+  });
+}
+
 export function setMemoryModel(modelId: string): Promise<AppSettingsStatus> {
   return request("/api/settings/memory-model", {
     method: "POST",

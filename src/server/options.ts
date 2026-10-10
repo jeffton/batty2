@@ -24,6 +24,7 @@ export const DEFAULT_BROWSER_MAX_TABS = 16;
 
 export interface StoredAppOptions {
   memoryModel?: string;
+  memoryLanguage?: string;
   authSecret?: string;
   workspacesRoots?: string[];
   webPushSubject?: string;
@@ -44,6 +45,7 @@ export interface StoredAppOptions {
 
 export interface AppOptions {
   memoryModel: string;
+  memoryLanguage: string;
   authSecret: string;
   workspacesRoots: string[];
   webPushSubject: string;
@@ -223,6 +225,7 @@ function normalizeStoredOptions(options: StoredAppOptions | undefined): AppOptio
     defaultProvider: normalizeOptionalString(options?.defaultProvider),
     defaultModel: normalizeOptionalString(options?.defaultModel),
     memoryModel: options?.memoryModel ?? "openai-codex/gpt-6-luna",
+    memoryLanguage: options?.memoryLanguage ?? "English",
     defaultThinkingLevel: normalizeThinkingLevel(options?.defaultThinkingLevel),
     baseUrl: normalizeBaseUrl(options?.baseUrl),
     appTitle: normalizeAppTitle(options?.appTitle),
@@ -339,6 +342,16 @@ export async function setDefaultModel(
 export async function setPushTitle(projectRoot: string, pushTitle: string): Promise<AppOptions> {
   const options = await loadAppOptions(projectRoot);
   const nextOptions = { ...options, pushTitle };
+  await writeStoredOptions(projectRoot, nextOptions);
+  return nextOptions;
+}
+
+export async function setMemoryLanguage(
+  projectRoot: string,
+  memoryLanguage: string,
+): Promise<AppOptions> {
+  const options = await loadAppOptions(projectRoot);
+  const nextOptions = { ...options, memoryLanguage };
   await writeStoredOptions(projectRoot, nextOptions);
   return nextOptions;
 }

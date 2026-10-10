@@ -10,6 +10,7 @@ import {
   setBraveSearchApiKey as setBraveSearchApiKeyRequest,
   setDefaultModel as setDefaultModelRequest,
   setMemoryModel as setMemoryModelRequest,
+  setMemoryLanguage as setMemoryLanguageRequest,
   setProviderApiKey,
   startOpenAIProviderAuth,
 } from "@/client/lib/api";
@@ -46,6 +47,10 @@ export const providerSettingsActions = {
   ): Promise<void> {
     this.providerAuth = await setProviderApiKey(providerId, apiKey);
     await this.bootstrap();
+  },
+
+  async setMemoryLanguage(this: AppActionContext, language: string): Promise<void> {
+    this.settings = await setMemoryLanguageRequest(language);
   },
 
   async setMemoryModel(this: AppActionContext, modelId: string): Promise<void> {

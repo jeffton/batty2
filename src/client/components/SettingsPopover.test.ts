@@ -11,6 +11,7 @@ function setup() {
   store.settings.pushTitle = "Roy";
   store.settings.memoryModel = "openai-codex/gpt-6-luna";
   store.settings.memoryReasoning = "low";
+  store.settings.memoryLanguage = "Danish";
   store.workspaces = [
     {
       id: "roy",
@@ -57,6 +58,26 @@ describe("Assistant settings", () => {
     await section.get("select").setValue("project");
     expect(save).toHaveBeenCalledWith("project");
     expect(store.settings.memoryReasoning).toBe("low");
+    wrapper.unmount();
+  });
+
+  it("saves memory language and surfaces failures without changing existing memory", async () => {
+    const { wrapper, store } = setup();
+    const save = vi.spyOn(store, "setMemoryLanguage").mockImplementation(async (language) => {
+      store.settings.memoryLanguage = language;
+    });
+    const input = wrapper.get<HTMLInputElement>('form input[type="text"]');
+    await input.setValue("Swedish");
+    await input.element.closest("form")!.dispatchEvent(new Event("submit"));
+    await flushPromises();
+    expect(save).toHaveBeenCalledWith("Swedish");
+    expect(input.element.value).toBe("Swedish");
+    save.mockRejectedValueOnce(new Error("Save failed"));
+    await input.setValue("English");
+    await input.element.closest("form")!.dispatchEvent(new Event("submit"));
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toBe("Save failed");
+    expect(store.settings.memoryLanguage).toBe("Swedish");
     wrapper.unmount();
   });
 

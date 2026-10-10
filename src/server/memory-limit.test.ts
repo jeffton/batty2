@@ -5,9 +5,12 @@ import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createMemory, MemoryNodesDoc } from "./memory";
 
-test.each([false, true])(
-  "five oversize responses keep the shortest candidate across transport retries (%s)",
-  async (transientError) => {
+test.each([
+  { transientError: false, language: undefined, expectedLanguage: "English" },
+  { transientError: true, language: "Swedish", expectedLanguage: "Swedish" },
+])(
+  "five oversize responses keep the shortest candidate across transport retries ($expectedLanguage)",
+  async ({ transientError, language, expectedLanguage }) => {
     const models = createModels();
     models.setProvider(fauxProvider().provider);
     const candidates = [
@@ -26,7 +29,7 @@ test.each([false, true])(
       return fauxAssistantMessage([fauxText(candidates[completed++]!)]);
     };
     const memory = createMemory(
-      { memoryModel: "faux/faux-1", retryMs: 1, onError: () => {} },
+      { memoryModel: "faux/faux-1", memoryLanguage: language, retryMs: 1, onError: () => {} },
       models,
     );
     const registry = createRegistry();
@@ -55,7 +58,8 @@ test.each([false, true])(
       );
       expect(corrections[0]).toContain("-".repeat(512));
       expect(corrections.at(-1)).toContain("162 UTF-8 bytes");
-      expect(corrections.at(-1)).toContain("more aggressively in Danish");
+      expect(corrections.at(-1)).toContain(`more aggressively in ${expectedLanguage}`);
+      expect(corrections[0]).toContain(`summaries in ${expectedLanguage}`);
       expect(corrections.at(-1)).not.toContain(candidates[0]);
       await memory.prepare();
       expect(completed).toBe(5);

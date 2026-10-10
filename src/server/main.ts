@@ -15,6 +15,7 @@ import {
   setBraveSearchKey,
   setDefaultModel,
   setMemoryModel,
+  setMemoryLanguage,
 } from "./options";
 import { listWorkspaces } from "./workspaces";
 import { changeAssistantWorkspace } from "./assistant-settings";
@@ -139,6 +140,7 @@ function settingsStatus() {
     defaultProvider: config.defaultProvider,
     defaultModel: config.defaultModel,
     memoryModel: config.memoryModel,
+    memoryLanguage: config.memoryLanguage,
     memoryReasoning: process.env.BATTY_MEMORY_REASONING ?? "low",
     defaultThinkingLevel: config.defaultThinkingLevel,
     appearance: { title: config.appTitle, color: config.appColor },
@@ -357,6 +359,16 @@ app.post<{ Body: { modelId: string; thinkingLevel: string } }>(
       defaultModel: settings.defaultModel,
       defaultThinkingLevel: settings.defaultThinkingLevel,
     });
+    return settingsStatus();
+  },
+);
+app.post<{ Body: { language: string } }>(
+  "/api/settings/memory-language",
+  async (request, reply) => {
+    const language = request.body.language.trim();
+    if (!language) return reply.code(400).send({ error: "Enter a memory language" });
+    const settings = await setMemoryLanguage(config.battyDir, language);
+    config.memoryLanguage = settings.memoryLanguage;
     return settingsStatus();
   },
 );

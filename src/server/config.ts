@@ -29,6 +29,7 @@ export interface AppConfig {
   defaultProvider?: string;
   defaultModel?: string;
   memoryModel: string;
+  memoryLanguage: string;
   defaultThinkingLevel?: DefaultThinkingLevel;
   baseUrl: string;
   appTitle: string;
@@ -138,6 +139,7 @@ export async function loadConfig(battyDir: string): Promise<AppConfig> {
     defaultProvider: options.defaultProvider,
     defaultModel: options.defaultModel,
     memoryModel: options.memoryModel,
+    memoryLanguage: options.memoryLanguage,
     defaultThinkingLevel: options.defaultThinkingLevel,
     baseUrl: options.baseUrl,
     appTitle: options.appTitle,

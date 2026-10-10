@@ -183,6 +183,9 @@ export class Runtime {
       {
         noiseBackupDir: path.join(dir, "memory-backups"),
         rebuildRequested: existsSync(path.join(dir, "memory-rebuild.request")),
+        get memoryLanguage() {
+          return config.memoryLanguage;
+        },
         get memoryModel() {
           return config.memoryModel;
         },
