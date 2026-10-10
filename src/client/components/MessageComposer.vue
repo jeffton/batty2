@@ -5,8 +5,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import ComposerQueuedPrompts from "@/client/components/ComposerQueuedPrompts.vue";
 import ModelConfigSelector from "@/client/components/ModelConfigSelector.vue";
 import StreamingStopControl from "@/client/components/StreamingStopControl.vue";
+import SubagentsControl from "@/client/components/SubagentsControl.vue";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/client/lib/session-draft";
-import type { ModelOption, QueuedPrompt } from "@/shared/types";
+import type { ModelOption, QueuedPrompt, RunningSubagent } from "@/shared/types";
 
 const DRAFT_SAVE_INTERVAL_MS = 400;
 
@@ -16,7 +17,7 @@ const props = defineProps<{
   streaming?: boolean;
   compacting?: boolean;
   memoryPending?: number;
-  subagentCount?: number;
+  subagents?: RunningSubagent[];
   offline?: boolean;
   error?: string;
   sessionKey?: string;
@@ -423,15 +424,16 @@ defineExpose({ clear, restore });
         </button>
 
         <StreamingStopControl
-          v-if="props.streaming || props.compacting || props.memoryPending || props.subagentCount"
+          v-if="props.streaming || props.compacting || props.memoryPending"
           class="composer__stream-actions"
           :disabled="actionsDisabled"
           :compacting="props.compacting"
           :status-label="props.memoryPending ? 'Preparing memory' : undefined"
-          :subagent-count="props.streaming ? 0 : props.subagentCount"
           :hide-stop="!props.streaming"
           @stop="emit('stop')"
         />
+
+        <SubagentsControl v-if="props.subagents?.length" :subagents="props.subagents" />
 
         <div class="composer__send-actions">
           <ModelConfigSelector
@@ -587,6 +589,7 @@ defineExpose({ clear, restore });
 .composer__actions-row {
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
   padding: 0 calc(var(--safe-area-right) + 0.4rem) 0 calc(var(--safe-area-left) + 0.4rem);
@@ -637,14 +640,13 @@ defineExpose({ clear, restore });
 }
 
 .composer__stream-actions {
-  min-width: 0;
-  flex-shrink: 1;
+  flex-shrink: 0;
   margin-inline: auto;
 }
 
 .composer__send-actions {
   min-width: 0;
-  flex-shrink: 1;
+  flex-shrink: 0;
   justify-content: flex-end;
   margin-left: auto;
 }

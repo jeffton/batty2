@@ -14,7 +14,7 @@ import {
   type OptimisticUserMessage,
   type PendingOptimisticMessage,
 } from "@/client/lib/optimistic-messages";
-import type { QueuedPrompt } from "@/shared/types";
+import type { QueuedPrompt, RunningSubagent } from "@/shared/types";
 
 const MODEL_POPOVER_ID = "chat-main-model-popover";
 const MODEL_POPOVER_ANCHOR = "--chat-main-model-anchor";
@@ -24,7 +24,7 @@ type ComposerHandle = InstanceType<typeof MessageComposer>;
 const store = useAppStore();
 const composer = ref<ComposerHandle | null>(null);
 const promptError = ref<string>();
-const subagentCount = ref(0);
+const subagents = ref<RunningSubagent[]>([]);
 const subagentError = ref<string>();
 const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSession));
 const pendingIdlePromptSessionIds = new Set<string>();
@@ -48,7 +48,7 @@ const isUnavailable = computed(() => store.connectionState !== "online");
 watch(
   [() => store.activeSession?.sessionId, isUnavailable],
   ([sessionId, offline], _previous, onCleanup) => {
-    subagentCount.value = 0;
+    subagents.value = [];
     subagentError.value = undefined;
     if (!sessionId || offline) return;
 
@@ -61,9 +61,9 @@ watch(
 
     async function refresh(): Promise<void> {
       try {
-        const subagents = await listRunningSubagents(sessionId!);
+        const agents = await listRunningSubagents(sessionId!);
         if (cancelled) return;
-        subagentCount.value = subagents.length;
+        subagents.value = agents;
         subagentError.value = undefined;
       } catch (error) {
         if (cancelled) return;
@@ -324,7 +324,7 @@ async function removeQueuedPrompt(prompt: QueuedPrompt): Promise<void> {
         :streaming="store.activeSession.isStreaming"
         :compacting="store.activeSession.isCompacting"
         :memory-pending="store.activeSession.memoryPreparation?.pending"
-        :subagent-count="subagentCount"
+        :subagents="subagents"
         :session-key="store.activeSession.sessionId"
         :offline="isUnavailable"
         :error="

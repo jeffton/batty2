@@ -1,24 +1,19 @@
 <script setup lang="ts">
 import { PanelRightOpen } from "@lucide/vue";
-import { onBeforeUnmount, ref, watch } from "vue";
+import { onBeforeUnmount, ref } from "vue";
 import FullPopover from "./FullPopover.vue";
 import SubagentSessionPopover from "./SubagentSessionPopover.vue";
-import {
-  listRunningSubagents,
-  listWorkspaceCronJobs,
-  listWorkspaceCronRunLogs,
-} from "@/client/lib/api";
+import { listWorkspaceCronJobs, listWorkspaceCronRunLogs } from "@/client/lib/api";
 import { useAppStore } from "@/client/stores/app";
-import type { CronJob, CronRunLog, RunningSubagent } from "@/shared/types";
+import type { CronJob, CronRunLog } from "@/shared/types";
 
 const props = defineProps<{ popoverId: string; anchorName: string }>();
 const store = useAppStore();
-const tabs = ["cron", "subagents", "logs"] as const;
+const tabs = ["cron", "logs"] as const;
 type Tab = (typeof tabs)[number];
 const activeTab = ref<Tab>("cron");
 const jobs = ref<CronJob[]>([]);
 const logs = ref<CronRunLog[]>([]);
-const subagents = ref<RunningSubagent[]>([]);
 const error = ref("");
 const loading = ref(false);
 let open = false;
@@ -66,20 +61,15 @@ function statusLabel(status: CronRunLog["status"]) {
 async function refresh() {
   clearTimeout(timer);
   const request = ++generation;
-  const sessionId = store.activeSession?.id;
   loading.value = true;
   try {
-    const [agents, workspaceData] = await Promise.all([
-      sessionId ? listRunningSubagents(sessionId) : Promise.resolve([]),
-      Promise.all(
-        store.workspaces.map(async (workspace) => ({
-          jobs: await listWorkspaceCronJobs(workspace.id),
-          logs: await listWorkspaceCronRunLogs(workspace.id),
-        })),
-      ),
-    ]);
+    const workspaceData = await Promise.all(
+      store.workspaces.map(async (workspace) => ({
+        jobs: await listWorkspaceCronJobs(workspace.id),
+        logs: await listWorkspaceCronRunLogs(workspace.id),
+      })),
+    );
     if (request !== generation) return;
-    subagents.value = agents;
     jobs.value = workspaceData.flatMap((data) => data.jobs);
     logs.value = workspaceData
       .flatMap((data) => data.logs)
@@ -104,13 +94,6 @@ function toggle(event: Event) {
     loading.value = false;
   }
 }
-watch(
-  () => store.activeSession?.id,
-  () => {
-    subagents.value = [];
-    if (open) void refresh();
-  },
-);
 onBeforeUnmount(() => {
   open = false;
   generation++;
@@ -123,13 +106,13 @@ onBeforeUnmount(() => {
     class="cron-popover"
     :popover-id="props.popoverId"
     :anchor-name="props.anchorName"
-    title="Cron and subagents"
+    title="Cron"
     subtitle="Cron jobs and logs across all workspaces"
-    close-label="Close cron and subagents popover"
+    close-label="Close cron popover"
     @toggle="toggle"
   >
     <template #header-content>
-      <div class="cron-popover__tabs" role="tablist" aria-label="Cron and subagent views">
+      <div class="cron-popover__tabs" role="tablist" aria-label="Cron views">
         <button
           v-for="tab in tabs"
           :id="tabId(tab)"
@@ -143,12 +126,9 @@ onBeforeUnmount(() => {
           @click="activeTab = tab"
           @keydown="handleTabKeydown"
         >
-          {{ tab === "cron" ? "Cron" : tab === "subagents" ? "Subagents" : "Logs" }}
+          {{ tab === "cron" ? "Cron" : "Logs" }}
           <span
-            v-if="
-              (tab === 'subagents' && subagents.length) ||
-              (tab === 'logs' && logs.some((run) => run.status === 'running'))
-            "
+            v-if="tab === 'logs' && logs.some((run) => run.status === 'running')"
             class="cron-popover__live-dot"
           />
         </button>
@@ -156,12 +136,7 @@ onBeforeUnmount(() => {
     </template>
     <div class="cron-popover__body">
       <p v-if="error" role="alert" class="cron-popover__error">{{ error }}</p>
-      <p
-        v-if="loading && !jobs.length && !subagents.length && !logs.length"
-        class="cron-popover__empty"
-      >
-        Loading…
-      </p>
+      <p v-if="loading && !jobs.length && !logs.length" class="cron-popover__empty">Loading…</p>
       <div
         v-for="tab in tabs"
         v-show="activeTab === tab"
@@ -192,40 +167,6 @@ onBeforeUnmount(() => {
           </article>
           <div v-if="!loading && !jobs.length" class="cron-popover__empty">
             No scheduled cron jobs.
-          </div>
-        </template>
-        <template v-else-if="tab === 'subagents'">
-          <article v-for="agent in subagents" :key="agent.sessionId" class="cron-popover__run">
-            <div class="cron-popover__run-content">
-              <div class="cron-popover__run-heading">
-                <span class="cron-popover__status">Running</span>
-                <strong>{{ agent.model }} · {{ agent.thinkingLevel }}</strong>
-              </div>
-              <div class="cron-popover__run-prompt">{{ agent.prompt }}</div>
-              <div class="cron-popover__run-details">
-                <span>{{ workspaceLabel(agent.workspaceId) }}</span>
-                <span v-if="agent.startedAtMs !== null">{{
-                  formatTimestamp(agent.startedAtMs)
-                }}</span>
-                <span>{{ agent.sessionId }}</span>
-              </div>
-            </div>
-            <button
-              type="button"
-              class="cron-popover__icon-btn"
-              :popovertarget="sessionPopoverId('worker', agent.sessionId)"
-              aria-label="Open subagent session"
-              title="Open session"
-            >
-              <PanelRightOpen :size="16" />
-            </button>
-            <SubagentSessionPopover
-              :popover-id="sessionPopoverId('worker', agent.sessionId)"
-              :session-id="agent.sessionId"
-            />
-          </article>
-          <div v-if="!loading && !subagents.length" class="cron-popover__empty">
-            No subagents are running for this session.
           </div>
         </template>
         <template v-else>

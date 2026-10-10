@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import CronPopover from "./CronPopover.vue";
 import * as api from "@/client/lib/api";
-import type { CronJob, CronRunLog, RunningSubagent } from "@/shared/types";
+import type { CronJob, CronRunLog } from "@/shared/types";
 
 vi.mock("@/client/lib/api", () => ({
   updateCronDelivery: vi.fn(),
@@ -40,18 +40,8 @@ function job(workspaceId: string): CronJob {
 
 afterEach(() => vi.clearAllMocks());
 
-describe("cron and subagents popover", () => {
-  it("lists jobs and logs from every workspace and opens worker/run sessions with icon buttons", async () => {
-    const agent: RunningSubagent = {
-      sessionId: "worker-session",
-      sessionPath: "durable:worker-session",
-      parentSessionId: "main",
-      workspaceId: "second",
-      prompt: "A lengthy worker prompt\nwith more instructions",
-      model: "provider/model",
-      thinkingLevel: "medium",
-      startedAtMs: Date.UTC(2026, 9, 7, 14, 24),
-    };
+describe("cron popover", () => {
+  it("lists jobs and logs from every workspace and opens run sessions with icon buttons", async () => {
     const run: CronRunLog = {
       runId: "run-second",
       jobId: "second",
@@ -65,7 +55,6 @@ describe("cron and subagents popover", () => {
       status: "success",
       sessionId: "cron-session",
     };
-    vi.mocked(api.listRunningSubagents).mockResolvedValue([agent]);
     vi.mocked(api.listWorkspaceCronJobs).mockImplementation(async (id) => [
       { ...job(id), ...(id === "second" ? { delivery: "direct" as const } : {}) },
     ]);
@@ -90,11 +79,7 @@ describe("cron and subagents popover", () => {
       expect(api.listWorkspaceCronJobs).toHaveBeenCalledWith("first");
       expect(api.listWorkspaceCronJobs).toHaveBeenCalledWith("second");
       expect(api.listWorkspaceCronRunLogs).toHaveBeenCalledWith("second");
-      expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-        "Cron",
-        "Subagents",
-        "Logs",
-      ]);
+      expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["Cron", "Logs"]);
       const cronPanel = wrapper.get("#cron-test-cron-panel");
       expect(cronPanel.text()).toContain("Job in first");
       expect(cronPanel.text()).toContain("Job in second");
@@ -104,30 +89,8 @@ describe("cron and subagents popover", () => {
       expect(jobDetails[1]!.text()).toContain("Delivery: Direct");
       expect(cronPanel.find("select").exists()).toBe(false);
       expect(api.updateCronDelivery).not.toHaveBeenCalled();
-      await wrapper.get("#cron-test-subagents-tab").trigger("click");
-      const agentPanel = wrapper.get("#cron-test-subagents-panel");
-      expect(agentPanel.text()).toContain(
-        new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-          agent.startedAtMs!,
-        ),
-      );
-      expect(agentPanel.text()).not.toContain("1970");
-      agent.startedAtMs = null;
-      vi.mocked(api.listRunningSubagents).mockResolvedValue([{ ...agent }]);
-      wrapper.getComponent({ name: "FullPopover" }).vm.$emit("toggle", { newState: "open" });
-      await flushPromises();
-      expect(agentPanel.text()).not.toContain("Start time unavailable");
-      expect(agentPanel.get(".cron-popover__run-details").findAll("span")).toHaveLength(2);
-      expect(agentPanel.text()).not.toContain("1970");
-      expect(cronPanel.attributes("style")).toContain("display: none");
-      expect((wrapper.get("#cron-test-subagents-panel").element as HTMLElement).style.display).toBe(
-        "",
-      );
-      expect(
-        wrapper.get('button[aria-label="Open subagent session"]').attributes("popovertarget"),
-      ).toBe("cron-test-worker-worker-session");
-      expect(wrapper.get('button[aria-label="Open subagent session"]').text()).toBe("");
-      await wrapper.get("#cron-test-subagents-tab").trigger("keydown", { key: "ArrowRight" });
+      expect(api.listRunningSubagents).not.toHaveBeenCalled();
+      await wrapper.get("#cron-test-cron-tab").trigger("keydown", { key: "ArrowRight" });
       expect(wrapper.get("#cron-test-logs-tab").attributes("aria-selected")).toBe("true");
       expect(wrapper.get("#cron-test-logs-panel").text()).toContain("Completed");
       expect(
@@ -137,7 +100,7 @@ describe("cron and subagents popover", () => {
         wrapper
           .findAllComponents({ name: "SubagentSessionPopover" })
           .map((popover) => popover.props("sessionId")),
-      ).toEqual(["worker-session", "cron-session"]);
+      ).toEqual(["cron-session"]);
     } finally {
       wrapper.unmount();
     }

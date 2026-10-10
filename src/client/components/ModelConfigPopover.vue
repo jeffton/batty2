@@ -56,6 +56,7 @@ watch(
 <template>
   <BasePopover
     :id="props.popoverId"
+    :anchor-up="props.placement === 'up'"
     :class="['mc-popover', props.placement === 'up' ? 'mc-popover--up' : '']"
     :style="{ 'position-anchor': props.anchorName }"
   >
@@ -124,11 +125,10 @@ watch(
 }
 
 :global(.mc-popover--up:popover-open) {
-  position-area: normal;
+  position-area: none;
   position-try-fallbacks: none;
   top: auto;
-  right: calc(var(--safe-area-right) + 0.8rem);
-  bottom: calc(var(--safe-area-bottom) + 4.5rem);
+  right: auto;
   left: auto;
   margin: 0;
 }

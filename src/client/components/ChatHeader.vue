@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { FolderOpen, Wrench, Clock3 } from "@lucide/vue";
+import { Wrench, Clock3 } from "@lucide/vue";
 import { useAppStore } from "@/client/stores/app";
-import FullPopover from "./FullPopover.vue";
 import SettingsPopover from "./SettingsPopover.vue";
 import ToolsPopover from "./ToolsPopover.vue";
 import CronPopover from "./CronPopover.vue";
@@ -31,18 +30,9 @@ async function logout() {
     <button
       type="button"
       class="header__button"
-      popovertarget="workspaces-popover"
-      aria-label="Agent workspaces"
-      title="Agent workspaces"
-    >
-      <FolderOpen :size="17" />
-    </button>
-    <button
-      type="button"
-      class="header__button"
       popovertarget="workers-popover"
-      aria-label="Cron and subagents"
-      title="Cron and subagents"
+      aria-label="Cron"
+      title="Cron"
     >
       <Clock3 :size="17" />
     </button>
@@ -50,8 +40,8 @@ async function logout() {
       type="button"
       class="header__button"
       popovertarget="tools-popover"
-      aria-label="MCPs, skills and tools"
-      title="MCPs, skills and tools"
+      aria-label="Workspaces and tools"
+      title="Workspaces and tools"
     >
       <Wrench :size="17" />
     </button>
@@ -63,19 +53,6 @@ async function logout() {
       :context-percent="store.activeSession?.contextPercent"
       :connection-state="store.connectionState"
     />
-    <FullPopover
-      popover-id="workspaces-popover"
-      title="Agent workspaces"
-      subtitle="Work targets for delegated agents"
-    >
-      <div class="workspace-list">
-        <article v-for="workspace in store.workspaces" :key="workspace.id">
-          <strong>{{ workspace.label }}</strong
-          ><code>{{ workspace.path }}</code>
-        </article>
-        <p v-if="!store.workspaces.length" class="muted">No workspaces configured.</p>
-      </div>
-    </FullPopover>
     <SettingsPopover
       popover-id="settings-popover"
       anchor-name="--settings-anchor"
@@ -130,25 +107,6 @@ async function logout() {
 }
 .header__spacer {
   flex: 1;
-}
-.workspace-list {
-  height: 100%;
-  overflow-y: auto;
-}
-.workspace-list article {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding: 1rem;
-  border-bottom: 1px solid var(--color-border-soft);
-}
-.workspace-list code {
-  color: var(--color-text-subtle);
-  font-size: 0.75rem;
-  overflow-wrap: anywhere;
-}
-.workspace-list p {
-  padding: 1rem;
 }
 @media (max-width: 360px) {
   .header {

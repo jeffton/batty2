@@ -13,9 +13,9 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
-const tabs = ["MCPs", "Skills", "Tools"] as const;
+const tabs = ["Workspaces", "MCPs", "Skills", "Tools"] as const;
 type Tab = (typeof tabs)[number];
-const activeTab = ref<Tab>("MCPs");
+const activeTab = ref<Tab>("Workspaces");
 const open = ref(false);
 const loading = ref(false);
 const error = ref("");
@@ -79,12 +79,12 @@ onBeforeUnmount(() => loadGeneration++);
   <FullPopover
     :popover-id="props.popoverId"
     :anchor-name="props.anchorName"
-    title="MCPs, skills and tools"
-    close-label="Close MCPs, skills and tools"
+    title="Workspaces and tools"
+    close-label="Close workspaces and tools"
     @toggle="handleToggle"
   >
     <template #header-content>
-      <div class="tools-popover__tabs" role="tablist" aria-label="Agent resources">
+      <div class="tools-popover__tabs" role="tablist" aria-label="Workspaces and tools">
         <button
           v-for="tab in tabs"
           :id="tabId(tab)"
@@ -103,6 +103,25 @@ onBeforeUnmount(() => loadGeneration++);
       </div>
     </template>
 
+    <div
+      v-show="activeTab === 'Workspaces'"
+      :id="panelId('Workspaces')"
+      role="tabpanel"
+      :aria-labelledby="tabId('Workspaces')"
+      class="tools-popover__pane"
+    >
+      <article
+        v-for="workspace in store.workspaces"
+        :key="workspace.id"
+        class="tools-popover__item tools-popover__workspace"
+      >
+        <strong>{{ workspace.label }}</strong>
+        <code>{{ workspace.path }}</code>
+      </article>
+      <div v-if="!store.workspaces.length" class="tools-popover__empty">
+        No workspaces configured.
+      </div>
+    </div>
     <div
       v-show="activeTab === 'MCPs'"
       :id="panelId('MCPs')"
@@ -150,6 +169,7 @@ onBeforeUnmount(() => loadGeneration++);
 <style scoped>
 .tools-popover__tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   margin-bottom: -0.75rem;
 }
@@ -186,6 +206,12 @@ onBeforeUnmount(() => loadGeneration++);
   border-bottom: 1px solid var(--color-border-soft);
   font-size: 0.86rem;
   overflow-wrap: anywhere;
+}
+
+.tools-popover__workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .tools-popover__item p {

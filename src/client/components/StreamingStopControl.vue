@@ -6,7 +6,6 @@ const props = defineProps<{
   label?: string;
   compacting?: boolean;
   statusLabel?: string;
-  subagentCount?: number;
   hideStop?: boolean;
 }>();
 
@@ -47,13 +46,6 @@ function triggerClick(): void {
       :title="props.statusLabel ?? 'Compacting'"
       >{{ props.statusLabel ?? "Compacting" }}</span
     >
-    <span
-      v-else-if="props.subagentCount"
-      class="streaming-stop-control__status"
-      :title="`${props.subagentCount} ${props.subagentCount === 1 ? 'subagent' : 'subagents'}`"
-    >
-      {{ props.subagentCount }} {{ props.subagentCount === 1 ? "subagent" : "subagents" }}
-    </span>
     <span class="spinner streaming-stop-control__spinner" aria-hidden="true" />
     <button
       v-if="!props.hideStop"
