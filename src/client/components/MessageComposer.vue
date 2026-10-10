@@ -5,9 +5,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import ComposerQueuedPrompts from "@/client/components/ComposerQueuedPrompts.vue";
 import ModelConfigSelector from "@/client/components/ModelConfigSelector.vue";
 import StreamingStopControl from "@/client/components/StreamingStopControl.vue";
-import SubagentsControl from "@/client/components/SubagentsControl.vue";
+import TasksControl from "@/client/components/TasksControl.vue";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/client/lib/session-draft";
-import type { ModelOption, QueuedPrompt, RunningSubagent } from "@/shared/types";
+import type { CronRunLog, ModelOption, QueuedPrompt, RunningSubagent } from "@/shared/types";
 
 const DRAFT_SAVE_INTERVAL_MS = 400;
 
@@ -18,6 +18,7 @@ const props = defineProps<{
   compacting?: boolean;
   memoryPending?: number;
   subagents?: RunningSubagent[];
+  cronRuns?: CronRunLog[];
   offline?: boolean;
   error?: string;
   sessionKey?: string;
@@ -424,16 +425,27 @@ defineExpose({ clear, restore });
         </button>
 
         <StreamingStopControl
-          v-if="props.streaming || props.compacting || props.memoryPending"
-          class="composer__stream-actions"
+          v-if="props.streaming"
+          :class="[
+            'composer__stream-actions',
+            {
+              'composer__stream-actions--tasks':
+                props.memoryPending ||
+                props.compacting ||
+                props.subagents?.length ||
+                props.cronRuns?.length,
+            },
+          ]"
           :disabled="actionsDisabled"
-          :compacting="props.compacting"
-          :status-label="props.memoryPending ? 'Preparing memory' : undefined"
-          :hide-stop="!props.streaming"
           @stop="emit('stop')"
         />
 
-        <SubagentsControl v-if="props.subagents?.length" :subagents="props.subagents" />
+        <TasksControl
+          :subagents="props.subagents ?? []"
+          :cron-runs="props.cronRuns ?? []"
+          :memory-pending="props.memoryPending"
+          :compacting="props.compacting"
+        />
 
         <div class="composer__send-actions">
           <ModelConfigSelector
@@ -589,9 +601,9 @@ defineExpose({ clear, restore });
 .composer__actions-row {
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.25rem;
   padding: 0 calc(var(--safe-area-right) + 0.4rem) 0 calc(var(--safe-area-left) + 0.4rem);
 }
 
@@ -641,12 +653,16 @@ defineExpose({ clear, restore });
 
 .composer__stream-actions {
   flex-shrink: 0;
-  margin-inline: auto;
+  margin-inline: 0;
+}
+
+.composer__stream-actions--tasks :deep(.streaming-stop-control__spinner) {
+  display: none;
 }
 
 .composer__send-actions {
   min-width: 0;
-  flex-shrink: 0;
+  flex-shrink: 1;
   justify-content: flex-end;
   margin-left: auto;
 }

@@ -28,6 +28,7 @@ const state = {
   activeTools: [],
   queuedPrompts: [],
   isStreaming: true,
+  memoryPreparation: { pending: 8 },
   pendingMessageCount: 0,
   contextTokens: null,
   contextWindow: null,
@@ -48,6 +49,7 @@ const state = {
   ],
 };
 const streams = new Set();
+let activeTasks = true;
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, "http://localhost");
   const json = (body) => {
@@ -89,7 +91,27 @@ const server = http.createServer(async (request, response) => {
       ],
       buildId: "dev",
     });
-  if (url.pathname.endsWith("/subagents")) return json([agent]);
+  if (url.pathname.endsWith("/subagents")) return json(activeTasks ? [agent] : []);
+  if (url.pathname.endsWith("/cron-run-logs"))
+    return json([
+      {
+        runId: "cron-running",
+        jobId: "job",
+        workspaceId: "roy",
+        prompt: "Running cron fixture",
+        status: activeTasks ? "running" : "success",
+        sessionId: "worker",
+        startedAtMs: Date.now(),
+      },
+      {
+        runId: "cron-done",
+        jobId: "old-job",
+        workspaceId: "roy",
+        prompt: "Completed cron fixture",
+        status: "success",
+        startedAtMs: Date.now(),
+      },
+    ]);
   if (url.pathname === "/api/main" || url.pathname === "/api/sessions/worker")
     return json({
       ...state,
@@ -108,6 +130,7 @@ const server = http.createServer(async (request, response) => {
     response.write(
       `data: ${JSON.stringify({ type: "reset", state: url.pathname.includes("worker") ? { ...state, id: "worker", sessionId: "worker", messages: [{ ...state.messages[0], blocks: [{ type: "text", text: "Worker transcript" }] }] } : state, streamId: state.streamId, revision: 1 })}\n\n`,
     );
+    response.worker = url.pathname.includes("worker");
     streams.add(response);
     request.on("close", () => streams.delete(response));
     return;
@@ -116,7 +139,10 @@ const server = http.createServer(async (request, response) => {
   if (url.pathname === "/api/version") return json({ buildId: "dev" });
   if (url.pathname.startsWith("/api/")) return json([]);
   try {
-    const file = path.join("dist/client", url.pathname === "/" ? "index.html" : url.pathname);
+    const file = path.join(
+      process.env.CLIENT_DIR ?? "dist/client",
+      url.pathname === "/" ? "index.html" : url.pathname,
+    );
     response.setHeader("Content-Type", mime.lookup(file) || "application/octet-stream");
     response.end(await fs.readFile(file));
   } catch {
@@ -129,10 +155,14 @@ const browser = await chromium.launch({ headless: true });
 try {
   for (const width of [320, 390, 1100]) {
     state.isStreaming = true;
+    state.memoryPreparation.pending = 8;
+    activeTasks = true;
     const context = await browser.newContext({ viewport: { width, height: 800 } });
     const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    const agents = page.getByRole("button", { name: "Running subagents", exact: true });
+    const agents = page.getByRole("button", { name: "Running tasks", exact: true });
     await agents.waitFor();
     const controls = await page.locator(".composer__actions-row button").evaluateAll((buttons) =>
       buttons.map((button) => {
@@ -152,6 +182,12 @@ try {
       assert(control.width >= 44 && control.height >= 44, JSON.stringify(control));
       assert(control.x >= 0 && control.right <= width, JSON.stringify(control));
     }
+    assert(
+      controls.every((control) => control.y === controls[0].y),
+      JSON.stringify(controls),
+    );
+    assert.equal(await agents.textContent().then((text) => text.trim()), "2 tasks");
+    assert.equal(await page.locator(".streaming-stop-control__status").count(), 0);
     for (let i = 0; i < controls.length; i++)
       for (let j = i + 1; j < controls.length; j++) {
         const a = controls[i];
@@ -163,7 +199,7 @@ try {
       }
     for (const [opener, selector] of [
       [page.getByRole("button", { name: "Model and thinking", exact: true }), ".mc-popover"],
-      [agents, ".subagents-popover"],
+      [agents, ".tasks-popover"],
     ]) {
       await opener.click();
       const popover = page.locator(`${selector}:popover-open`);
@@ -177,9 +213,13 @@ try {
         JSON.stringify({ width, anchor, box }),
       );
       assert(box.x <= anchor.x + anchor.width && box.x + box.width >= anchor.x);
-      if (selector === ".subagents-popover") {
+      if (selector === ".mc-popover")
+        assert(Math.abs(box.x + box.width - (width - 8)) < 1, JSON.stringify({ width, box }));
+      if (selector === ".tasks-popover") {
+        assert.equal(await popover.getByText("Preparing memory", { exact: true }).count(), 1);
+        assert.equal(await popover.getByText("Completed cron fixture", { exact: true }).count(), 0);
         state.isStreaming = false;
-        for (const stream of streams)
+        for (const stream of [...streams].filter((stream) => !stream.worker))
           stream.write(
             `data: ${JSON.stringify({ type: "reset", state: { ...state, revision: 2 }, streamId: state.streamId, revision: 2 })}\n\n`,
           );
@@ -191,14 +231,28 @@ try {
         assert(
           idleBox.x <= idleAnchor.x + idleAnchor.width && idleBox.x + idleBox.width >= idleAnchor.x,
         );
-        const row = await popover.locator(".subagents-popover__session").boundingBox();
+        const row = await popover.locator(".tasks-popover__task").first().boundingBox();
         assert(row.height > 44);
         await page.screenshot({ path: `/tmp/batty2-compose-${width}.png` });
         await popover
-          .getByRole("button", { name: "Open subagent session: Investigate the UI" })
+          .getByRole("button", { name: "Open task session: Running cron fixture" })
           .click();
         await page.getByText("Worker transcript", { exact: true }).waitFor();
+        activeTasks = false;
+        state.memoryPreparation.pending = 0;
+        for (const stream of [...streams].filter((stream) => !stream.worker))
+          stream.write(
+            `data: ${JSON.stringify({ type: "reset", state: { ...state, revision: 3 }, streamId: state.streamId, revision: 3 })}\n\n`,
+          );
+        await page.waitForTimeout(2000);
+        assert(
+          await page.getByText("Worker transcript", { exact: true }).isVisible(),
+          "Completed task transcript disappeared",
+        );
+        assert.equal(await agents.textContent().then((text) => text.trim()), "0 tasks");
         await page.keyboard.press("Escape");
+        assert(await popover.getByText("No running tasks.", { exact: true }).isVisible());
+        assert.deepEqual(errors, []);
       } else {
         await page.setViewportSize({ width, height: 400 });
         await page.waitForTimeout(100);

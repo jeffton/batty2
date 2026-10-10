@@ -57,6 +57,7 @@ watch(
   <BasePopover
     :id="props.popoverId"
     :anchor-up="props.placement === 'up'"
+    :align-viewport-right="props.placement === 'up'"
     :class="['mc-popover', props.placement === 'up' ? 'mc-popover--up' : '']"
     :style="{ 'position-anchor': props.anchorName }"
   >

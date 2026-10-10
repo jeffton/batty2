@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import ChatHeader from "@/client/components/ChatHeader.vue";
 import MessageComposer from "@/client/components/MessageComposer.vue";
 import SessionTranscriptView from "@/client/components/SessionTranscriptView.vue";
-import { getMain, listRunningSubagents } from "@/client/lib/api";
+import { getMain, listRunningSubagents, listWorkspaceCronRunLogs } from "@/client/lib/api";
 import { applySessionResponse } from "@/client/lib/session-events";
 import { resolveThinkingOptions } from "@/client/lib/thinking-levels";
 import { promptSubmissionId, retainPromptRetry, clearPromptRetry } from "@/client/lib/prompt-retry";
@@ -14,7 +14,7 @@ import {
   type OptimisticUserMessage,
   type PendingOptimisticMessage,
 } from "@/client/lib/optimistic-messages";
-import type { QueuedPrompt, RunningSubagent } from "@/shared/types";
+import type { CronRunLog, QueuedPrompt, RunningSubagent } from "@/shared/types";
 
 const MODEL_POPOVER_ID = "chat-main-model-popover";
 const MODEL_POPOVER_ANCHOR = "--chat-main-model-anchor";
@@ -25,6 +25,7 @@ const store = useAppStore();
 const composer = ref<ComposerHandle | null>(null);
 const promptError = ref<string>();
 const subagents = ref<RunningSubagent[]>([]);
+const cronRuns = ref<CronRunLog[]>([]);
 const subagentError = ref<string>();
 const thinkingOptions = computed(() => resolveThinkingOptions(store.activeSession));
 const pendingIdlePromptSessionIds = new Set<string>();
@@ -49,6 +50,7 @@ watch(
   [() => store.activeSession?.sessionId, isUnavailable],
   ([sessionId, offline], _previous, onCleanup) => {
     subagents.value = [];
+    cronRuns.value = [];
     subagentError.value = undefined;
     if (!sessionId || offline) return;
 
@@ -61,9 +63,13 @@ watch(
 
     async function refresh(): Promise<void> {
       try {
-        const agents = await listRunningSubagents(sessionId!);
+        const [agents, workspaceRuns] = await Promise.all([
+          listRunningSubagents(sessionId!),
+          Promise.all(store.workspaces.map((workspace) => listWorkspaceCronRunLogs(workspace.id))),
+        ]);
         if (cancelled) return;
         subagents.value = agents;
+        cronRuns.value = workspaceRuns.flat().filter((run) => run.status === "running");
         subagentError.value = undefined;
       } catch (error) {
         if (cancelled) return;
@@ -325,6 +331,7 @@ async function removeQueuedPrompt(prompt: QueuedPrompt): Promise<void> {
         :compacting="store.activeSession.isCompacting"
         :memory-pending="store.activeSession.memoryPreparation?.pending"
         :subagents="subagents"
+        :cron-runs="cronRuns"
         :session-key="store.activeSession.sessionId"
         :offline="isUnavailable"
         :error="

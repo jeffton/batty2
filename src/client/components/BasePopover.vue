@@ -8,6 +8,7 @@ const props = withDefaults(
     as?: "div" | "form";
     mode?: "auto" | "manual";
     anchorUp?: boolean;
+    alignViewportRight?: boolean;
   }>(),
   {
     as: "div",
@@ -44,7 +45,7 @@ function positionAboveAnchor(): void {
     top: "auto",
     right: "auto",
     bottom: `${window.innerHeight - rect.top + margin}px`,
-    left: `${Math.max(viewportLeft + margin, Math.min(rect.right - width, viewportLeft + viewportWidth - width - margin))}px`,
+    left: `${props.alignViewportRight ? viewportLeft + viewportWidth - width - margin : Math.max(viewportLeft + margin, Math.min(rect.right - width, viewportLeft + viewportWidth - width - margin))}px`,
     maxWidth: `${viewportWidth - margin * 2}px`,
     maxHeight: `min(var(--anchored-popover-max-height, 32rem), ${Math.max(0, rect.top - viewportTop - margin * 2)}px)`,
     margin: "0",

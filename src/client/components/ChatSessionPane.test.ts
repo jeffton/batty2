@@ -33,7 +33,8 @@ test("initial main snapshot shows preparation and SSE memory errors without poll
     },
   });
   try {
-    expect(wrapper.text()).toContain("Preparing memory");
+    expect(wrapper.get('button[aria-label="Running tasks"]').text()).toBe("1 task");
+    expect(wrapper.find(".streaming-stop-control__status").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Compacting");
     store.activeSession.memoryPreparation = {
       pending: 0,

@@ -21,7 +21,8 @@ describe("memory preparation", () => {
     });
     try {
       // The initial session snapshot supplies this before any memory-status request.
-      expect(wrapper.text()).toContain("Preparing memory");
+      expect(wrapper.get('button[aria-label="Running tasks"]').text()).toBe("1 task");
+      expect(wrapper.find(".streaming-stop-control").exists()).toBe(false);
       expect(wrapper.text()).not.toContain("Compacting");
       await wrapper.get("textarea").setValue("Queue this while memory is prepared");
       const send = wrapper.get('button[aria-label="Send prompt"]');
@@ -35,7 +36,7 @@ describe("memory preparation", () => {
       expect(wrapper.text()).not.toContain("Compacting");
 
       await wrapper.setProps({ compacting: true, error: undefined });
-      expect(wrapper.text()).toContain("Compacting");
+      expect(wrapper.get('button[aria-label="Running tasks"]').text()).toBe("1 task");
       expect(wrapper.text()).not.toContain("Preparing memory");
     } finally {
       wrapper.unmount();
