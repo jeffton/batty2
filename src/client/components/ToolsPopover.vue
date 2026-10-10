@@ -13,7 +13,7 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
-const tabs = ["Workspaces", "MCPs", "Skills", "Tools"] as const;
+const tabs = ["Workspaces", "Skills", "MCPs", "Tools"] as const;
 type Tab = (typeof tabs)[number];
 const activeTab = ref<Tab>("Workspaces");
 const open = ref(false);

@@ -58,12 +58,13 @@ describe("Workspaces and tools", () => {
       expect(workspacePanel.text()).toContain("Project");
       expect(workspacePanel.text()).toContain("/work/project");
       await wrapper.get("#tools-test-Workspaces-tab").trigger("keydown", { key: "ArrowRight" });
+      expect(wrapper.get("#tools-test-Skills-panel").isVisible()).toBe(true);
+      expect(document.activeElement?.id).toBe("tools-test-Skills-tab");
+      expect(wrapper.get("#tools-test-Skills-panel").text()).toContain("Local notes");
+      await wrapper.get("#tools-test-Skills-tab").trigger("keydown", { key: "ArrowRight" });
       expect(wrapper.get("#tools-test-MCPs-panel").isVisible()).toBe(true);
-      expect(document.activeElement?.id).toBe("tools-test-MCPs-tab");
       expect(wrapper.getComponent({ name: "McpSettingsPanel" }).props("active")).toBe(true);
       await wrapper.get("#tools-test-MCPs-tab").trigger("keydown", { key: "ArrowRight" });
-      expect(wrapper.get("#tools-test-Skills-panel").text()).toContain("Local notes");
-      await wrapper.get("#tools-test-Skills-tab").trigger("keydown", { key: "End" });
       expect(wrapper.get("#tools-test-Tools-panel").text()).toContain("Read files");
       await wrapper.get("#tools-test-Tools-tab").trigger("keydown", { key: "ArrowRight" });
       expect(wrapper.get("#tools-test-Workspaces-tab").attributes("aria-selected")).toBe("true");
