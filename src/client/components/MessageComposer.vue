@@ -397,6 +397,8 @@ defineExpose({ clear, restore });
         ref="textarea"
         v-model="text"
         class="composer__input"
+        name="chat-message"
+        aria-label="Chat message"
         rows="1"
         autocomplete="off"
         autocorrect="on"
