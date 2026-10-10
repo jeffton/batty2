@@ -274,6 +274,11 @@ try {
           .getByRole("button", { name: "Open task session: Running cron fixture" })
           .click();
         await page.getByText("Worker transcript", { exact: true }).waitFor();
+        assert.equal(
+          await popover.isVisible(),
+          false,
+          "Tasks list stayed open when session opened",
+        );
         activeTasks = false;
         state.memoryPreparation.pending = 0;
         publishMain();
@@ -282,9 +287,18 @@ try {
           await page.getByText("Worker transcript", { exact: true }).isVisible(),
           "Completed task transcript disappeared",
         );
-        assert.equal(await agents.textContent().then((text) => text.trim()), "0 tasks");
+        assert.equal(await agents.isVisible(), false);
         await page.keyboard.press("Escape");
+        activeTasks = true;
+        await agents.waitFor();
+        await agents.click();
+        await page.waitForTimeout(100);
+        activeTasks = false;
+        await page.waitForTimeout(2000);
+        assert.equal(await agents.textContent().then((text) => text.trim()), "0 tasks");
         assert(await popover.getByText("No running tasks.", { exact: true }).isVisible());
+        await page.keyboard.press("Escape");
+        await agents.waitFor({ state: "hidden" });
         assert.deepEqual(errors, []);
       } else {
         await page.setViewportSize({ width, height: 400 });

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ListTodo, PanelRightOpen } from "@lucide/vue";
-import { computed, ref, useId } from "vue";
+import { Activity, PanelRightOpen } from "@lucide/vue";
+import { computed, nextTick, ref, useId } from "vue";
 import BasePopover from "./BasePopover.vue";
 import SubagentSessionPopover from "./SubagentSessionPopover.vue";
 import type { CronRunLog, RunningSubagent } from "@/shared/types";
@@ -14,6 +14,7 @@ const props = defineProps<{
 const popoverId = `tasks-${useId()}`;
 const sessionPopoverId = (id: string) => `${popoverId}-session-${id}`;
 const tasksOpen = ref(false);
+const tasksPopover = ref<InstanceType<typeof BasePopover>>();
 const selectedTask = ref<{ id: string; sessionId?: string }>();
 const tasks = computed(() => {
   const runningCron = props.cronRuns.filter((run) => run.status === "running");
@@ -52,6 +53,12 @@ const sessionTasks = computed(() => {
   }
   return current;
 });
+async function openSession(task: { id: string; sessionId?: string }): Promise<void> {
+  selectedTask.value = task;
+  tasksPopover.value!.hidePopover();
+  await nextTick();
+  document.getElementById(sessionPopoverId(task.id))!.showPopover();
+}
 function sessionToggle(taskId: string, event: Event): void {
   if ((event as ToggleEvent).newState === "closed" && selectedTask.value?.id === taskId) {
     selectedTask.value = undefined;
@@ -68,13 +75,14 @@ function sessionToggle(taskId: string, event: Event): void {
     aria-label="Running tasks"
     aria-haspopup="dialog"
   >
-    <ListTodo :size="17" aria-hidden="true" />
+    <Activity :size="17" aria-hidden="true" />
     <span class="tasks-control__info">
       <strong>{{ tasks.length }} {{ tasks.length === 1 ? "task" : "tasks" }}</strong>
       <span v-if="tasks.length" class="spinner tasks-control__spinner" aria-hidden="true" />
     </span>
   </button>
   <BasePopover
+    ref="tasksPopover"
     :id="popoverId"
     class="tasks-popover"
     dim-backdrop
@@ -97,7 +105,7 @@ function sessionToggle(taskId: string, event: Event): void {
           :popovertarget="sessionPopoverId(task.id)"
           :aria-label="`Open task session: ${task.title}`"
           title="Open session"
-          @click="selectedTask = task"
+          @click.prevent="openSession(task)"
         >
           <PanelRightOpen :size="16" />
         </button>
@@ -105,16 +113,16 @@ function sessionToggle(taskId: string, event: Event): void {
       </article>
       <p v-if="!tasks.length" class="tasks-popover__empty">No running tasks.</p>
     </div>
-    <template v-for="task in sessionTasks" :key="task.id">
-      <SubagentSessionPopover
-        v-if="task.sessionId"
-        :popover-id="sessionPopoverId(task.id)"
-        :session-id="task.sessionId"
-        :header-title="task.id.startsWith('cron-') ? 'Cron run' : 'Subagent'"
-        @toggle="sessionToggle(task.id, $event)"
-      />
-    </template>
   </BasePopover>
+  <template v-for="task in sessionTasks" :key="task.id">
+    <SubagentSessionPopover
+      v-if="task.sessionId"
+      :popover-id="sessionPopoverId(task.id)"
+      :session-id="task.sessionId"
+      :header-title="task.id.startsWith('cron-') ? 'Cron run' : 'Subagent'"
+      @toggle="sessionToggle(task.id, $event)"
+    />
+  </template>
 </template>
 
 <style scoped>
