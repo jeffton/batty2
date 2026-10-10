@@ -9,6 +9,7 @@ const props = withDefaults(
     mode?: "auto" | "manual";
     anchorUp?: boolean;
     alignViewportRight?: boolean;
+    dimBackdrop?: boolean;
   }>(),
   {
     as: "div",
@@ -114,7 +115,7 @@ defineExpose({ element, showPopover, hidePopover, togglePopover });
     <component
       :is="props.as"
       ref="element"
-      class="base-popover"
+      :class="['base-popover', { 'base-popover--dimmed': props.dimBackdrop }]"
       :popover="props.mode"
       v-bind="$attrs"
       :style="anchorStyle"
@@ -129,5 +130,9 @@ defineExpose({ element, showPopover, hidePopover, togglePopover });
 <style scoped>
 .base-popover {
   overscroll-behavior: contain;
+}
+
+.base-popover--dimmed::backdrop {
+  background: var(--color-backdrop);
 }
 </style>

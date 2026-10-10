@@ -56,6 +56,7 @@ watch(
 <template>
   <BasePopover
     :id="props.popoverId"
+    dim-backdrop
     :anchor-up="props.placement === 'up'"
     :align-viewport-right="props.placement === 'up'"
     :class="['mc-popover', props.placement === 'up' ? 'mc-popover--up' : '']"
@@ -132,10 +133,6 @@ watch(
   right: auto;
   left: auto;
   margin: 0;
-}
-
-:global(.mc-popover::backdrop) {
-  background: var(--color-backdrop);
 }
 
 .mc-popover__search-row {

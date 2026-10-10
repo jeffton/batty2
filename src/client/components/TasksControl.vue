@@ -77,6 +77,7 @@ function sessionToggle(taskId: string, event: Event): void {
   <BasePopover
     :id="popoverId"
     class="tasks-popover"
+    dim-backdrop
     anchor-up
     role="dialog"
     aria-label="Running tasks"

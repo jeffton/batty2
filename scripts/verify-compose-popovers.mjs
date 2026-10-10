@@ -50,6 +50,14 @@ const state = {
 };
 const streams = new Set();
 let activeTasks = true;
+function publishMain() {
+  state.revision++;
+  for (const stream of [...streams].filter((stream) => !stream.worker)) {
+    stream.write(
+      `data: ${JSON.stringify({ type: "reset", state, streamId: state.streamId, revision: state.revision })}\n\n`,
+    );
+  }
+}
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, "http://localhost");
   const json = (body) => {
@@ -155,6 +163,7 @@ const browser = await chromium.launch({ headless: true });
 try {
   for (const width of [320, 390, 1100]) {
     state.isStreaming = true;
+    state.revision = 1;
     state.memoryPreparation.pending = 8;
     activeTasks = true;
     const context = await browser.newContext({ viewport: { width, height: 800 } });
@@ -197,6 +206,29 @@ try {
           `Overlapping controls: ${a.name}/${b.name}`,
         );
       }
+    const stop = page.getByRole("button", { name: "Stop", exact: true });
+    const stopWithTasks = await stop.boundingBox();
+    const assertStopPosition = async () => {
+      const box = await stop.boundingBox();
+      assert(
+        Math.abs(box.x - stopWithTasks.x) < 1 && box.y === stopWithTasks.y,
+        "Stop button moved with task status",
+      );
+    };
+    activeTasks = false;
+    state.memoryPreparation.pending = 0;
+    publishMain();
+    await agents.waitFor({ state: "hidden" });
+    await assertStopPosition();
+    state.memoryPreparation.pending = 8;
+    publishMain();
+    await agents.waitFor();
+    await assertStopPosition();
+    activeTasks = true;
+    await page.waitForTimeout(1700);
+    await assertStopPosition();
+    assert(await agents.locator(".tasks-control__info strong").isVisible());
+    assert(await agents.locator(".tasks-control__spinner").isVisible());
     for (const [opener, selector] of [
       [page.getByRole("button", { name: "Model and thinking", exact: true }), ".mc-popover"],
       [agents, ".tasks-popover"],
@@ -205,6 +237,13 @@ try {
       const popover = page.locator(`${selector}:popover-open`);
       await popover.waitFor();
       await page.waitForTimeout(100);
+      assert.notEqual(
+        await popover.evaluate(
+          (element) => getComputedStyle(element, "::backdrop").backgroundColor,
+        ),
+        "rgba(0, 0, 0, 0)",
+        "Popover backdrop missing",
+      );
       const anchor = await opener.boundingBox();
       const box = await popover.boundingBox();
       assert(box.x >= 7 && box.x + box.width <= width - 7, JSON.stringify({ width, box }));
@@ -219,10 +258,7 @@ try {
         assert.equal(await popover.getByText("Preparing memory", { exact: true }).count(), 1);
         assert.equal(await popover.getByText("Completed cron fixture", { exact: true }).count(), 0);
         state.isStreaming = false;
-        for (const stream of [...streams].filter((stream) => !stream.worker))
-          stream.write(
-            `data: ${JSON.stringify({ type: "reset", state: { ...state, revision: 2 }, streamId: state.streamId, revision: 2 })}\n\n`,
-          );
+        publishMain();
         await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "hidden" });
         await page.waitForTimeout(100);
         const idleAnchor = await opener.boundingBox();
@@ -240,10 +276,7 @@ try {
         await page.getByText("Worker transcript", { exact: true }).waitFor();
         activeTasks = false;
         state.memoryPreparation.pending = 0;
-        for (const stream of [...streams].filter((stream) => !stream.worker))
-          stream.write(
-            `data: ${JSON.stringify({ type: "reset", state: { ...state, revision: 3 }, streamId: state.streamId, revision: 3 })}\n\n`,
-          );
+        publishMain();
         await page.waitForTimeout(2000);
         assert(
           await page.getByText("Worker transcript", { exact: true }).isVisible(),

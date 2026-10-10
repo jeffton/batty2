@@ -424,22 +424,6 @@ defineExpose({ clear, restore });
           <Paperclip :size="18" />
         </button>
 
-        <StreamingStopControl
-          v-if="props.streaming"
-          :class="[
-            'composer__stream-actions',
-            {
-              'composer__stream-actions--tasks':
-                props.memoryPending ||
-                props.compacting ||
-                props.subagents?.length ||
-                props.cronRuns?.length,
-            },
-          ]"
-          :disabled="actionsDisabled"
-          @stop="emit('stop')"
-        />
-
         <TasksControl
           :subagents="props.subagents ?? []"
           :cron-runs="props.cronRuns ?? []"
@@ -448,6 +432,21 @@ defineExpose({ clear, restore });
         />
 
         <div class="composer__send-actions">
+          <StreamingStopControl
+            v-if="props.streaming"
+            :class="[
+              'composer__stream-actions',
+              {
+                'composer__stream-actions--tasks':
+                  props.memoryPending ||
+                  props.compacting ||
+                  props.subagents?.length ||
+                  props.cronRuns?.length,
+              },
+            ]"
+            :disabled="actionsDisabled"
+            @stop="emit('stop')"
+          />
           <ModelConfigSelector
             :popover-id="props.modelPopoverId"
             :anchor-name="props.modelPopoverAnchor"
